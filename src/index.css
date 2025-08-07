@@ -1,0 +1,61 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html {
+    @apply antialiased;
+  }
+  
+  body {
+    @apply bg-forge-dark text-zinc-300;
+    @apply min-h-screen w-full;
+  }
+  
+  /* Custom scrollbar */
+  ::-webkit-scrollbar {
+    @apply w-2;
+  }
+  
+  ::-webkit-scrollbar-track {
+    @apply bg-forge-darker;
+  }
+  
+  ::-webkit-scrollbar-thumb {
+    @apply bg-forge-lighter rounded-full;
+  }
+  
+  ::-webkit-scrollbar-thumb:hover {
+    @apply bg-zinc-600;
+  }
+}
+
+@layer components {
+  .tab-button {
+    @apply px-4 py-2 rounded-lg text-sm font-medium transition-all duration-200;
+    @apply hover:bg-forge-light text-zinc-400 hover:text-zinc-200;
+  }
+  
+  .tab-button-active {
+    @apply bg-forge-orange text-white hover:bg-orange-600 hover:text-white;
+  }
+  
+  .btn-primary {
+    @apply px-4 py-2 bg-forge-orange text-white rounded-lg font-medium;
+    @apply hover:bg-orange-600 transition-colors duration-200;
+    @apply focus:outline-none focus:ring-2 focus:ring-forge-orange focus:ring-offset-2 focus:ring-offset-forge-dark;
+  }
+  
+  .btn-secondary {
+    @apply px-4 py-2 bg-forge-light text-zinc-300 rounded-lg font-medium;
+    @apply hover:bg-forge-lighter transition-colors duration-200;
+    @apply focus:outline-none focus:ring-2 focus:ring-forge-lighter focus:ring-offset-2 focus:ring-offset-forge-dark;
+  }
+  
+  .input-field {
+    @apply w-full px-4 py-2 bg-forge-light border border-forge-lighter rounded-lg;
+    @apply text-zinc-200 placeholder-zinc-500;
+    @apply focus:outline-none focus:ring-2 focus:ring-forge-orange focus:border-transparent;
+    @apply transition-all duration-200;
+  }
+}
