@@ -1,0 +1,69 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+node_modules
+dist
+dist-ssr
+*.local
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Environment variables
+.env
+.env.*
+.env.local
+.env.production
+.env.development
+.env.test
+
+# Secrets and keys
+*.key
+*.pem
+*.p12
+*.pfx
+secrets/
+.secrets
+config/secrets.json
+config/production.json
+jwt.key
+private.key
+public.key
+
+# API keys and tokens
+api_keys.json
+tokens.json
+credentials.json
+service-account*.json
+gcp-key.json
+aws-credentials
+.aws/
+firebase-adminsdk*.json
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+database.json
+
+# Build files
+build/
+.cache/
+
+# OS files
+Thumbs.db
+desktop.ini
