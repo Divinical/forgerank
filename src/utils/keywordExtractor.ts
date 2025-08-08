@@ -1,3 +1,5 @@
+// Keyword extraction utility - runs in UI thread with idle callbacks
+
 // Common English stopwords to filter out
 const STOPWORDS = new Set([
   'a', 'an', 'and', 'are', 'as', 'at', 'be', 'by', 'for', 'from',
@@ -13,46 +15,32 @@ const STOPWORDS = new Set([
   'did', 'get', 'come', 'made', 'after', 'back', 'little', 'only',
   'round', 'man', 'year', 'came', 'show', 'every', 'good', 'me',
   'give', 'our', 'under', 'name', 'very', 'through', 'just', 'form',
-  'sentence', 'great', 'think', 'say', 'help', 'low', 'line', 'differ',
-  'turn', 'cause', 'much', 'mean', 'before', 'move', 'right', 'boy',
-  'old', 'too', 'same', 'tell', 'does', 'set', 'three', 'want',
-  'air', 'well', 'also', 'play', 'small', 'end', 'put', 'home',
-  'read', 'hand', 'port', 'large', 'spell', 'add', 'even', 'land',
-  'here', 'must', 'big', 'high', 'such', 'follow', 'act', 'why',
-  'ask', 'men', 'change', 'went', 'light', 'kind', 'off', 'need',
-  'house', 'picture', 'try', 'us', 'again', 'animal', 'point', 'mother',
-  'world', 'near', 'build', 'self', 'earth', 'father', 'any', 'new',
-  'work', 'place', 'live', 'back', 'take', 'only', 'little', 'help',
-  'year', 'came', 'show', 'every', 'good', 'me', 'give', 'under',
-  'went', 'himself', 'say', 'very', 'something', 'through', 'back',
-  'before', 'now', 'only', 'look', 'people', 'could', 'over', 'know',
-  'water', 'than', 'call', 'first', 'may', 'down', 'side', 'been',
-  'now', 'find', 'any', 'new', 'part', 'take', 'get', 'place',
-  'made', 'live', 'where', 'after', 'back', 'little', 'only', 'round',
-  'man', 'year', 'came', 'show', 'every', 'good', 'me', 'give',
-  'our', 'under', 'am', 'i', 'we', 'you', 'can', "don't", "didn't",
-  "won't", "wouldn't", "couldn't", "shouldn't", "isn't", "aren't",
-  "wasn't", "weren't", "hasn't", "haven't", "hadn't", "doesn't"
+  'i', 'we', 'you', 'can', "don't", "didn't", "won't", "wouldn't",
+  'am', 'or', 'nor', 'not', 'too', 'also', 'than', 'those'
 ])
 
-// Additional web-specific stopwords
+// Web-specific stopwords
 const WEB_STOPWORDS = new Set([
   'click', 'button', 'link', 'page', 'site', 'website', 'web',
   'email', 'submit', 'form', 'field', 'privacy', 'policy', 'terms',
   'copyright', 'reserved', 'rights', 'contact', 'about', 'home',
-  'nav', 'navigation', 'menu', 'footer', 'header', 'sidebar',
-  'content', 'main', 'div', 'span', 'class', 'style', 'script',
-  'undefined', 'null', 'true', 'false', 'function', 'var', 'const',
-  'let', 'return', 'console', 'log', 'error', 'warning'
+  'nav', 'navigation', 'menu', 'footer', 'header', 'sidebar'
 ])
 
 interface ExtractedKeyword {
+  id?: string
   keyword: string
   frequency: number
   relevance: 'high' | 'medium' | 'low'
+  source_url?: string
+  created_at?: string
 }
 
-export function extractKeywords(text: string, maxKeywords: number = 50): ExtractedKeyword[] {
+export function extractKeywords(
+  text: string, 
+  sourceUrl?: string,
+  maxKeywords: number = 30
+): ExtractedKeyword[] {
   // Clean and normalize text
   const cleanText = text
     .toLowerCase()
@@ -83,7 +71,7 @@ export function extractKeywords(text: string, maxKeywords: number = 50): Extract
     .sort((a, b) => b[1] - a[1])
     .slice(0, maxKeywords)
   
-  // Calculate relevance based on frequency and position
+  // Calculate relevance based on frequency
   const maxFrequency = sortedWords[0]?.[1] || 1
   
   return sortedWords.map(([keyword, frequency]) => {
@@ -106,27 +94,112 @@ export function extractKeywords(text: string, maxKeywords: number = 50): Extract
     }
     
     return {
+      id: sourceUrl ? `${sourceUrl}-${keyword}` : undefined,
       keyword,
       frequency,
-      relevance
+      relevance,
+      source_url: sourceUrl,
+      created_at: new Date().toISOString()
     }
   })
 }
 
-// Extract keywords specifically from around backlinks
-export function extractKeywordsAroundBacklinks(
-  pageText: string,
-  backlinkPositions: { start: number; end: number }[]
-): ExtractedKeyword[] {
-  const contextWindow = 200 // Characters before and after backlink
-  const contexts: string[] = []
+// Process keywords using idle callbacks to avoid blocking UI
+export function processKeywordsInIdle(
+  sources: Array<{ url: string; content?: string }>,
+  onComplete: (keywords: ExtractedKeyword[]) => void
+) {
+  const allKeywords: ExtractedKeyword[] = []
+  let currentIndex = 0
   
-  backlinkPositions.forEach(position => {
-    const start = Math.max(0, position.start - contextWindow)
-    const end = Math.min(pageText.length, position.end + contextWindow)
-    contexts.push(pageText.substring(start, end))
+  function processNext(deadline: IdleDeadline) {
+    while (deadline.timeRemaining() > 0 && currentIndex < sources.length) {
+      const source = sources[currentIndex]
+      
+      if (source.content) {
+        const keywords = extractKeywords(source.content, source.url)
+        allKeywords.push(...keywords)
+      }
+      
+      currentIndex++
+    }
+    
+    if (currentIndex < sources.length) {
+      // More to process, request another idle callback
+      requestIdleCallback(processNext)
+    } else {
+      // All done, deduplicate and return results
+      const keywordMap = new Map<string, ExtractedKeyword>()
+      
+      allKeywords.forEach(kw => {
+        const key = `${kw.keyword}|${kw.source_url || ''}`
+        const existing = keywordMap.get(key)
+        
+        if (!existing || kw.frequency > existing.frequency) {
+          keywordMap.set(key, kw)
+        }
+      })
+      
+      // Sort by frequency and return top keywords
+      const finalKeywords = Array.from(keywordMap.values())
+        .sort((a, b) => b.frequency - a.frequency)
+        .slice(0, 50)
+      
+      onComplete(finalKeywords)
+    }
+  }
+  
+  // Start processing
+  if ('requestIdleCallback' in window) {
+    requestIdleCallback(processNext)
+  } else {
+    // Fallback for browsers that don't support requestIdleCallback
+    setTimeout(() => {
+      sources.forEach(source => {
+        if (source.content) {
+          const keywords = extractKeywords(source.content, source.url)
+          allKeywords.push(...keywords)
+        }
+      })
+      
+      const keywordMap = new Map<string, ExtractedKeyword>()
+      allKeywords.forEach(kw => {
+        const key = `${kw.keyword}|${kw.source_url || ''}`
+        const existing = keywordMap.get(key)
+        if (!existing || kw.frequency > existing.frequency) {
+          keywordMap.set(key, kw)
+        }
+      })
+      
+      const finalKeywords = Array.from(keywordMap.values())
+        .sort((a, b) => b.frequency - a.frequency)
+        .slice(0, 50)
+      
+      onComplete(finalKeywords)
+    }, 100)
+  }
+}
+
+// Extract keywords from page content when backlinks are found
+export async function extractKeywordsFromBacklinks(
+  backlinks: Array<{ source_url: string }>,
+  onProgress?: (processed: number, total: number) => void
+): Promise<ExtractedKeyword[]> {
+  // Get stored keyword sources from background
+  const { localKeywordSources = {} } = await chrome.storage.local.get('localKeywordSources')
+  
+  const sources = backlinks
+    .map(bl => ({
+      url: bl.source_url,
+      content: localKeywordSources[bl.source_url]?.content
+    }))
+    .filter(s => s.content)
+  
+  return new Promise((resolve) => {
+    processKeywordsInIdle(sources, (keywords) => {
+      // Store keywords locally
+      chrome.storage.local.set({ localKeywords: keywords })
+      resolve(keywords)
+    })
   })
-  
-  const combinedContext = contexts.join(' ')
-  return extractKeywords(combinedContext)
 }

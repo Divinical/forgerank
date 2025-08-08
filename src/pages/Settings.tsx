@@ -4,23 +4,6 @@ import { useStore } from '../store/useStore'
 import { useState } from 'react'
 import { ResetConfirmModal } from '../components/ResetConfirmModal'
 
-// Safe date utilities
-function safeToISOString(): string {
-  try {
-    return new Date().toISOString()
-  } catch (error) {
-    return new Date(Date.now()).toISOString()
-  }
-}
-
-function safeDateString(): string {
-  try {
-    return new Date().toISOString().split('T')[0]
-  } catch (error) {
-    return new Date(Date.now()).toISOString().split('T')[0]
-  }
-}
-
 export function Settings() {
   const { isDarkMode, toggleDarkMode, notificationsEnabled, toggleNotifications, isAuthenticated, user, signOut, backlinks, keywords } = useStore()
   const [loading, setLoading] = useState<string>('')
@@ -33,7 +16,7 @@ export function Settings() {
     
     // Create JSON export
     const exportData = {
-      exportDate: safeToISOString(),
+      exportDate: new Date().toISOString(),
       user: {
         email: user?.email,
         id: user?.id
@@ -47,7 +30,7 @@ export function Settings() {
     const url = window.URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = url
-    a.download = `forgerank-export-${safeDateString()}.json`
+    a.download = `forgerank-export-${new Date().toISOString().split('T')[0]}.json`
     a.click()
     window.URL.revokeObjectURL(url)
     
@@ -60,17 +43,16 @@ export function Settings() {
     // Clear local storage except auth data, tracked URLs, and UI settings
     const preserveData = await chrome.storage.local.get([
       'userId', 'userEmail', 'isAuthenticated', 'isPro', 'lastAuthCheck',
-      'trackedUrls', 'isDarkMode', 'notificationsEnabled'
+      'trackedUrls', 'isDarkMode', 'notificationsEnabled',
+      'forgerank-auth' // Keep auth token
     ])
     await chrome.storage.local.clear()
     await chrome.storage.local.set(preserveData)
     
-    console.log('🧹 Reset Findings: Preserved tracked URLs and settings:', preserveData.trackedUrls)
-    
-    // Immediately clear UI state to ensure responsiveness
+    // Clear UI state immediately
     useStore.setState({ backlinks: [], keywords: [] })
     
-    // Refresh data (this will confirm cleared state from storage)
+    // Refresh data
     await useStore.getState().fetchBacklinks()
     await useStore.getState().fetchKeywords()
     await useStore.getState().fetchTrackedUrls()
@@ -89,7 +71,7 @@ export function Settings() {
         }
       }
     } catch (error) {
-      console.log('🧹 Reset Findings: Could not notify tabs to reload scanner state')
+      // Could not notify tabs
     }
     
     setTimeout(() => setLoading(''), 1000)
@@ -104,10 +86,8 @@ export function Settings() {
       
       // Sign out user
       await signOut()
-      
-      console.log('🗑️ Reset All: All data cleared successfully')
     } catch (error) {
-      console.error('🗑️ Reset All: Error clearing data:', error)
+      // Error clearing data
     } finally {
       setShowResetModal(false)
       setTimeout(() => setLoading(''), 1000)
@@ -117,6 +97,7 @@ export function Settings() {
   const handleSignOut = async () => {
     setLoading('signout')
     await signOut()
+    setLoading('')
   }
   
   return (

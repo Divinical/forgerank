@@ -3,8 +3,8 @@ import { TrendingUp, Link, Hash, Clock } from 'lucide-react'
 import { useStore } from '../store/useStore'
 import { format } from 'date-fns'
 
-// Safe date formatting utility
-function safeFormat(dateValue: any, formatString: string, fallback: string = 'Invalid date'): string {
+// Simple date formatting with fallback
+function formatDate(dateValue: any, formatString: string, fallback: string = 'Never'): string {
   if (!dateValue) return fallback
   try {
     const date = new Date(dateValue)
@@ -22,7 +22,7 @@ export function Dashboard() {
   const totalBacklinks = backlinks.length
   const totalKeywords = keywords.length
   const lastScan = backlinks.length > 0 
-    ? safeFormat(backlinks[0].created_at, 'MMM dd, HH:mm', 'Never')
+    ? formatDate(backlinks[0].created_at, 'MMM dd, HH:mm', 'Never')
     : 'Never'
   
   const recentBacklinks = backlinks.slice(0, 5)
@@ -114,7 +114,7 @@ export function Dashboard() {
                     </p>
                   </div>
                   <span className="text-xs text-zinc-400">
-                    {safeFormat(backlink.created_at, 'HH:mm')}
+                    {formatDate(backlink.created_at, 'HH:mm', 'Unknown')}
                   </span>
                 </div>
               ))}

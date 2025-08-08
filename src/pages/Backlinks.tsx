@@ -3,8 +3,8 @@ import { ExternalLink, Clock, AlertCircle, CheckCircle, XCircle } from 'lucide-r
 import { useStore } from '../store/useStore'
 import { format } from 'date-fns'
 
-// Safe date formatting utility
-function safeFormat(dateValue: any, formatString: string, fallback: string = 'Invalid date'): string {
+// Simple date formatting with fallback
+function formatDate(dateValue: any, formatString: string, fallback: string = 'Unknown'): string {
   if (!dateValue) return fallback
   try {
     const date = new Date(dateValue)
@@ -94,7 +94,7 @@ export function Backlinks() {
                     key={backlink.id}
                     initial={{ opacity: 0 }}
                     animate={{ opacity: 1 }}
-                    transition={{ delay: index * 0.05 }}
+                    transition={{ delay: Math.min(index * 0.02, 0.5) }}
                     className="hover:bg-forge-lighter/50 transition-colors"
                   >
                     <td className="px-6 py-4">
@@ -128,7 +128,7 @@ export function Backlinks() {
                     <td className="px-6 py-4">
                       <div className="flex items-center gap-2 text-zinc-400 text-sm">
                         <Clock className="w-4 h-4" />
-                        {safeFormat(backlink.first_seen_at, 'MMM dd, HH:mm')}
+                        {formatDate(backlink.first_seen_at || backlink.created_at, 'MMM dd, HH:mm')}
                       </div>
                     </td>
                     {isPro && (
@@ -149,7 +149,7 @@ export function Backlinks() {
         </div>
       </div>
       
-      {!isPro && (
+      {!isPro && backlinks.length > 0 && (
         <motion.div
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}

@@ -20,7 +20,14 @@ export function LoginModal() {
         throw new Error('Please enter email and password')
       }
       
+      if (password.length < 6) {
+        throw new Error('Password must be at least 6 characters')
+      }
+      
       await signIn('email', email, password)
+      // Success - modal will be closed by the signIn method
+      setEmail('')
+      setPassword('')
     } catch (err: any) {
       setError(err.message || 'Authentication failed')
     } finally {
@@ -34,11 +41,19 @@ export function LoginModal() {
     
     try {
       await signIn(provider)
+      // OAuth will redirect, so loading state may persist
     } catch (err: any) {
       setError(err.message || 'Authentication failed')
-    } finally {
       setLoading(false)
     }
+  }
+  
+  const handleClose = () => {
+    setLoginModalOpen(false)
+    setError('')
+    setEmail('')
+    setPassword('')
+    setIsSignUp(false)
   }
   
   return (
@@ -50,7 +65,7 @@ export function LoginModal() {
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            onClick={() => setLoginModalOpen(false)}
+            onClick={handleClose}
             className="fixed inset-0 bg-black/60 backdrop-blur-sm z-40"
           />
           
@@ -64,7 +79,7 @@ export function LoginModal() {
           >
             <div className="bg-forge-light rounded-2xl p-8 max-w-md w-full relative">
               <button
-                onClick={() => setLoginModalOpen(false)}
+                onClick={handleClose}
                 className="absolute top-4 right-4 text-zinc-400 hover:text-zinc-200 transition-colors"
               >
                 <X className="w-5 h-5" />
@@ -77,7 +92,7 @@ export function LoginModal() {
               
               {error && (
                 <div className="mb-4 p-3 bg-red-500/10 border border-red-500/30 rounded-lg flex items-center gap-2">
-                  <AlertCircle className="w-4 h-4 text-red-400" />
+                  <AlertCircle className="w-4 h-4 text-red-400 flex-shrink-0" />
                   <p className="text-sm text-red-400">{error}</p>
                 </div>
               )}
@@ -149,10 +164,10 @@ export function LoginModal() {
                     type="password"
                     value={password}
                     onChange={(e) => setPassword(e.target.value)}
-                    placeholder="Password"
+                    placeholder="Password (min 6 characters)"
                     className="input-field"
                     disabled={loading}
-                    onKeyDown={(e) => e.key === 'Enter' && handleEmailAuth()}
+                    onKeyDown={(e) => e.key === 'Enter' && !loading && handleEmailAuth()}
                   />
                   
                   <motion.button
@@ -165,12 +180,16 @@ export function LoginModal() {
                       disabled:opacity-50 disabled:cursor-not-allowed"
                   >
                     <Mail className="w-5 h-5" />
-                    {isSignUp ? 'Sign Up with Email' : 'Sign In with Email'}
+                    {loading ? 'Processing...' : isSignUp ? 'Sign Up with Email' : 'Sign In with Email'}
                   </motion.button>
                   
                   <button
-                    onClick={() => setIsSignUp(!isSignUp)}
+                    onClick={() => {
+                      setIsSignUp(!isSignUp)
+                      setError('')
+                    }}
                     className="text-sm text-zinc-400 hover:text-zinc-200 transition-colors"
+                    disabled={loading}
                   >
                     {isSignUp ? 'Already have an account? Sign in' : "Don't have an account? Sign up"}
                   </button>

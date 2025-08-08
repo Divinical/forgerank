@@ -1,28 +1,49 @@
 import { motion } from 'framer-motion'
-import { Hash, Download } from 'lucide-react'
+import { Hash, Download, RefreshCw } from 'lucide-react'
 import { useStore } from '../store/useStore'
-import { useState } from 'react'
-
-// Safe date utility
-function safeDateString(): string {
-  try {
-    return new Date().toISOString().split('T')[0]
-  } catch (error) {
-    return new Date(Date.now()).toISOString().split('T')[0]
-  }
-}
+import { useState, useEffect } from 'react'
+import { extractKeywordsFromBacklinks } from '../utils/keywordExtractor'
 
 export function Keywords() {
-  const { keywords, isPro } = useStore()
+  const { keywords, isPro, backlinks } = useStore()
   const [filterRelevance, setFilterRelevance] = useState<string>('all')
+  const [isProcessing, setIsProcessing] = useState(false)
+  const [localKeywords, setLocalKeywords] = useState(keywords)
   
-  // Group keywords by relevance (Pro users only, Free users see all)
+  useEffect(() => {
+    setLocalKeywords(keywords)
+  }, [keywords])
+  
+  // Process keywords in idle time when component mounts if we have backlinks but no keywords
+  useEffect(() => {
+    if (backlinks.length > 0 && localKeywords.length === 0 && !isProcessing) {
+      processKeywords()
+    }
+  }, [backlinks])
+  
+  const processKeywords = async () => {
+    if (isProcessing || backlinks.length === 0) return
+    
+    setIsProcessing(true)
+    try {
+      const extractedKeywords = await extractKeywordsFromBacklinks(backlinks)
+      setLocalKeywords(extractedKeywords)
+      // Update store
+      useStore.setState({ keywords: extractedKeywords })
+    } catch (error) {
+      // Silent fail
+    } finally {
+      setIsProcessing(false)
+    }
+  }
+  
+  // Filter keywords by relevance (Pro users only, Free users see all)
   const filteredKeywords = (isPro && filterRelevance !== 'all')
-    ? keywords.filter(k => k.relevance === filterRelevance)
-    : keywords
+    ? localKeywords.filter(k => k.relevance === filterRelevance)
+    : localKeywords
   
-  const highRelevanceCount = keywords.filter(k => k.relevance === 'high').length
-  const totalOccurrences = keywords.reduce((sum, k) => sum + k.frequency, 0)
+  const highRelevanceCount = localKeywords.filter(k => k.relevance === 'high').length
+  const totalOccurrences = localKeywords.reduce((sum, k) => sum + k.frequency, 0)
   
   const getTagStyle = (relevance: string) => {
     switch (relevance) {
@@ -48,7 +69,7 @@ export function Keywords() {
     
     // Create CSV content
     const headers = ['Keyword', 'Frequency', 'Relevance']
-    const rows = keywords.map(k => [k.keyword, k.frequency, k.relevance])
+    const rows = localKeywords.map(k => [k.keyword, k.frequency, k.relevance])
     
     const csvContent = [
       headers.join(','),
@@ -60,7 +81,7 @@ export function Keywords() {
     const url = window.URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = url
-    a.download = `forgerank-keywords-${safeDateString()}.csv`
+    a.download = `forgerank-keywords-${new Date().toISOString().split('T')[0]}.csv`
     a.click()
     window.URL.revokeObjectURL(url)
   }
@@ -81,6 +102,19 @@ export function Keywords() {
         </div>
         
         <div className="flex gap-3">
+          {backlinks.length > 0 && !isProcessing && (
+            <motion.button
+              whileHover={{ scale: 1.02 }}
+              whileTap={{ scale: 0.98 }}
+              onClick={processKeywords}
+              className="btn-secondary flex items-center gap-2"
+              title="Reprocess keywords from backlinks"
+            >
+              <RefreshCw className="w-4 h-4" />
+              Refresh
+            </motion.button>
+          )}
+          
           {isPro ? (
             <>
               <select
@@ -98,12 +132,13 @@ export function Keywords() {
                 whileTap={{ scale: 0.98 }}
                 onClick={handleExport}
                 className="btn-primary flex items-center gap-2"
+                disabled={localKeywords.length === 0}
               >
                 <Download className="w-4 h-4" />
                 Export
               </motion.button>
             </>
-          ) : keywords.length > 0 && (
+          ) : localKeywords.length > 0 && (
             <div className="flex items-center gap-2 text-zinc-400 text-sm">
               <span>🔒 Filter & Export available with Pro</span>
             </div>
@@ -112,23 +147,30 @@ export function Keywords() {
       </div>
       
       <div className="bg-forge-light rounded-2xl p-8">
-        {filteredKeywords.length === 0 ? (
+        {isProcessing ? (
+          <div className="text-center py-12">
+            <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-forge-orange mx-auto mb-4"></div>
+            <p className="text-zinc-400">Processing keywords...</p>
+          </div>
+        ) : filteredKeywords.length === 0 ? (
           <div className="text-center py-12">
             <Hash className="w-12 h-12 text-zinc-600 mx-auto mb-4" />
             <p className="text-zinc-400">
               {filterRelevance !== 'all' 
                 ? `No ${filterRelevance} relevance keywords found.`
-                : 'No keywords extracted yet. Keywords will appear here after backlinks are discovered.'}
+                : backlinks.length === 0
+                  ? 'No keywords extracted yet. Keywords will appear here after backlinks are discovered.'
+                  : 'Click "Refresh" to extract keywords from your backlinks.'}
             </p>
           </div>
         ) : (
           <div className="flex flex-wrap gap-3">
             {filteredKeywords.map((keyword, index) => (
               <motion.div
-                key={keyword.id}
+                key={keyword.id || `${keyword.keyword}-${index}`}
                 initial={{ opacity: 0, scale: 0.8 }}
                 animate={{ opacity: 1, scale: 1 }}
-                transition={{ delay: index * 0.05 }}
+                transition={{ delay: Math.min(index * 0.02, 0.5) }}
                 whileHover={{ scale: 1.05 }}
                 className={`
                   inline-flex items-center gap-2 rounded-full border
@@ -170,7 +212,7 @@ export function Keywords() {
         <div className="bg-forge-light rounded-xl p-6">
           <h3 className="text-lg font-semibold text-white mb-2">Total Keywords</h3>
           <p className="text-3xl font-bold text-blue-400">
-            {keywords.length}
+            {localKeywords.length}
           </p>
           <p className="text-sm text-zinc-400 mt-1">Unique terms found</p>
         </div>

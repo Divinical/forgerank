@@ -12,18 +12,47 @@ import { useStore } from './store/useStore'
 import { supabase } from './lib/supabase'
 
 function App() {
-  const { activeTab, isDarkMode, checkAuth, syncPendingBacklinks, fetchBacklinks, isLoading } = useStore()
+  const { activeTab, isDarkMode, checkAuth, loadUserData, fetchBacklinks, setUser, setIsAuthenticated } = useStore()
   
-  // Check authentication on mount
+  // Check authentication on mount and listen for auth changes
   useEffect(() => {
+    // Initial auth check (fast, non-blocking)
     checkAuth()
+    
+    // Listen for auth state changes
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(
+      async (event, session) => {
+        if (event === 'SIGNED_IN' && session?.user) {
+          setUser(session.user)
+          setIsAuthenticated(true)
+          // Load user data after a small delay to not block UI
+          setTimeout(() => {
+            loadUserData()
+          }, 100)
+        } else if (event === 'SIGNED_OUT') {
+          setUser(null)
+          setIsAuthenticated(false)
+          // Clear user data but keep tracked URLs from local storage
+          useStore.setState({ 
+            backlinks: [], 
+            keywords: [],
+            isPro: false
+          })
+        } else if (event === 'TOKEN_REFRESHED' && session?.user) {
+          // Silent token refresh
+          setUser(session.user)
+          setIsAuthenticated(true)
+        }
+      }
+    )
+    
+    return () => subscription.unsubscribe()
   }, [])
   
   // Listen for backlink updates from background script
   useEffect(() => {
     const messageListener = (message: any) => {
       if (message.type === 'BACKLINKS_UPDATED') {
-        console.log('🔄 App: Received backlinks update, refreshing data')
         fetchBacklinks()
         // Also refresh keywords since they're extracted from the same source
         useStore.getState().fetchKeywords()
@@ -36,15 +65,6 @@ function App() {
       chrome.runtime.onMessage.removeListener(messageListener)
     }
   }, [fetchBacklinks])
-  
-  // Sync pending backlinks periodically
-  useEffect(() => {
-    const interval = setInterval(() => {
-      syncPendingBacklinks()
-    }, 30000) // Every 30 seconds
-    
-    return () => clearInterval(interval)
-  }, [])
   
   // Apply dark mode class to document
   useEffect(() => {
@@ -75,17 +95,7 @@ function App() {
     }
   }
   
-  if (isLoading) {
-    return (
-      <div className="flex h-screen bg-forge-dark items-center justify-center">
-        <div className="text-center">
-          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-forge-orange mx-auto mb-4"></div>
-          <p className="text-zinc-400">Loading ForgeRank...</p>
-        </div>
-      </div>
-    )
-  }
-  
+  // No loading screen - render immediately
   return (
     <div className="flex h-screen bg-forge-dark text-zinc-300 overflow-hidden">
       {/* Sidebar */}
