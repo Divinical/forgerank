@@ -3,12 +3,13 @@ import { Hash, Download, RefreshCw } from 'lucide-react'
 import { useStore } from '../store/useStore'
 import { useState, useEffect } from 'react'
 import { extractKeywordsFromBacklinks } from '../utils/keywordExtractor'
+import type { Keyword } from '../types/keyword'
 
 export function Keywords() {
   const { keywords, isPro, backlinks } = useStore()
   const [filterRelevance, setFilterRelevance] = useState<string>('all')
   const [isProcessing, setIsProcessing] = useState(false)
-  const [localKeywords, setLocalKeywords] = useState(keywords)
+  const [localKeywords, setLocalKeywords] = useState<Keyword[]>(keywords)
   
   useEffect(() => {
     setLocalKeywords(keywords)

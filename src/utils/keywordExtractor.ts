@@ -1,3 +1,4 @@
+import type { Keyword } from '../types/keyword'
 // Keyword extraction utility - runs in UI thread with idle callbacks
 
 // Common English stopwords to filter out
@@ -27,20 +28,12 @@ const WEB_STOPWORDS = new Set([
   'nav', 'navigation', 'menu', 'footer', 'header', 'sidebar'
 ])
 
-interface ExtractedKeyword {
-  id: string
-  keyword: string
-  frequency: number
-  relevance: 'high' | 'medium' | 'low'
-  source_url?: string
-  created_at: string
-}
 
 export function extractKeywords(
   text: string, 
   sourceUrl?: string,
   maxKeywords: number = 30
-): ExtractedKeyword[] {
+): Keyword[] {
   // Clean and normalize text
   const cleanText = text
     .toLowerCase()
@@ -107,9 +100,9 @@ export function extractKeywords(
 // Process keywords using idle callbacks to avoid blocking UI
 export function processKeywordsInIdle(
   sources: Array<{ url: string; content?: string }>,
-  onComplete: (keywords: ExtractedKeyword[]) => void
+  onComplete: (keywords: Keyword[]) => void
 ) {
-  const allKeywords: ExtractedKeyword[] = []
+  const allKeywords: Keyword[] = []
   let currentIndex = 0
   
   function processNext(deadline: IdleDeadline) {
@@ -129,7 +122,7 @@ export function processKeywordsInIdle(
       requestIdleCallback(processNext)
     } else {
       // All done, deduplicate and return results
-      const keywordMap = new Map<string, ExtractedKeyword>()
+      const keywordMap = new Map<string, Keyword>()
       
       allKeywords.forEach(kw => {
         const key = `${kw.keyword}|${kw.source_url || ''}`
@@ -162,7 +155,7 @@ export function processKeywordsInIdle(
         }
       })
       
-      const keywordMap = new Map<string, ExtractedKeyword>()
+      const keywordMap = new Map<string, Keyword>()
       allKeywords.forEach(kw => {
         const key = `${kw.keyword}|${kw.source_url || ''}`
         const existing = keywordMap.get(key)
@@ -183,7 +176,7 @@ export function processKeywordsInIdle(
 // Extract keywords from page content when backlinks are found
 export async function extractKeywordsFromBacklinks(
   backlinks: Array<{ source_url: string }>
-): Promise<ExtractedKeyword[]> {
+): Promise<Keyword[]> {
   // Get stored keyword sources from background
   const { localKeywordSources = {} } = await chrome.storage.local.get('localKeywordSources')
   

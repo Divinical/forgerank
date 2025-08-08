@@ -1,4 +1,5 @@
 import { create } from 'zustand'
+import type { Keyword } from '../types/keyword'
 import { supabase } from '../lib/supabase'
 import { User } from '@supabase/supabase-js'
 
@@ -18,14 +19,6 @@ interface Backlink {
   created_at: string
 }
 
-interface Keyword {
-  id: string
-  keyword: string
-  frequency: number
-  relevance: string
-  source_url?: string
-  created_at: string
-}
 
 interface AppState {
   // Tab Management
@@ -107,7 +100,7 @@ export const useStore = create<AppState>((set, get) => ({
   // Data State
   trackedUrls: [],
   backlinks: [],
-  keywords: [],
+  keywords: [] as Keyword[],
   
   // Core Actions
   signIn: async (provider, email, password) => {
@@ -150,7 +143,7 @@ export const useStore = create<AppState>((set, get) => ({
         isPro: false,
         trackedUrls: [],
         backlinks: [],
-        keywords: []
+        keywords: [] as Keyword[]
       })
     } catch (error) {
       // Silent fail
@@ -370,7 +363,7 @@ export const useStore = create<AppState>((set, get) => ({
         if (!error && data) {
           set({ keywords: data })
         } else {
-          set({ keywords: [] })
+          set({ keywords: [] as Keyword[] })
         }
       } else {
         if (!chrome || !chrome.storage || !chrome.storage.local) {
@@ -382,7 +375,7 @@ export const useStore = create<AppState>((set, get) => ({
         set({ keywords })
       }
     } catch (error) {
-      set({ keywords: [] })
+      set({ keywords: [] as Keyword[] })
     }
   }
 }))
