@@ -1,10 +1,12 @@
+// src/pages/TrackedLinks.tsx - FIXED VERSION
+
 import { motion } from 'framer-motion'
-import { Plus, Trash2, ExternalLink } from 'lucide-react'
+import { Plus, Trash2, ExternalLink, AlertCircle } from 'lucide-react'
 import { useState } from 'react'
 import { useStore } from '../store/useStore'
 
 export function TrackedLinks() {
-  const { trackedUrls, addTrackedUrl, removeTrackedUrl, isPro, isAuthenticated } = useStore()
+  const { trackedUrls, addTrackedUrl, removeTrackedUrl, isPro, isAuthenticated, user } = useStore()
   const [newUrl, setNewUrl] = useState('')
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
@@ -13,13 +15,37 @@ export function TrackedLinks() {
   
   const handleAddUrl = async () => {
     setError('')
+    
+    // Validate URL format
+    if (!newUrl.trim()) {
+      setError('Please enter a URL')
+      return
+    }
+    
+    // Add protocol if missing
+    let urlToAdd = newUrl.trim()
+    if (!urlToAdd.startsWith('http://') && !urlToAdd.startsWith('https://')) {
+      urlToAdd = 'https://' + urlToAdd
+    }
+    
     setLoading(true)
     
     try {
-      await addTrackedUrl(newUrl)
+      await addTrackedUrl(urlToAdd)
       setNewUrl('')
+      setError('') // Clear any previous errors
     } catch (err: any) {
-      setError(err.message || 'Failed to add URL')
+      console.error('Error adding URL:', err)
+      // Provide more helpful error messages
+      if (err.message?.includes('duplicate key')) {
+        setError('This URL is already being tracked')
+      } else if (err.message?.includes('Maximum')) {
+        setError(err.message)
+      } else if (err.message?.includes('Invalid URL')) {
+        setError('Please enter a valid URL (e.g., https://example.com)')
+      } else {
+        setError(err.message || 'Failed to add URL. Please check your connection and try again.')
+      }
     } finally {
       setLoading(false)
     }
@@ -30,8 +56,20 @@ export function TrackedLinks() {
       await removeTrackedUrl(url)
     } catch (err) {
       console.error('Failed to remove URL:', err)
+      setError('Failed to remove URL. Please try again.')
     }
   }
+  
+  // Debug info for development
+  const debugInfo = process.env.NODE_ENV === 'development' && (
+    <div className="mb-4 p-3 bg-blue-500/10 border border-blue-500/30 rounded-lg text-xs text-blue-400">
+      <p>Debug Info:</p>
+      <p>Authenticated: {isAuthenticated ? 'Yes' : 'No'}</p>
+      <p>User: {user?.email || 'None'}</p>
+      <p>Pro Status: {isPro ? 'Yes' : 'No'}</p>
+      <p>Tracked URLs: {trackedUrls.length}/{maxUrls}</p>
+    </div>
+  )
   
   return (
     <motion.div
@@ -46,14 +84,20 @@ export function TrackedLinks() {
         ({trackedUrls.length}/{maxUrls} used)
       </p>
       
+      {debugInfo}
+      
       <div className="bg-forge-light rounded-2xl p-6 mb-6">
         <div className="flex gap-3 mb-3">
           <input
             type="text"
             value={newUrl}
             onChange={(e) => setNewUrl(e.target.value)}
-            onKeyDown={(e) => e.key === 'Enter' && handleAddUrl()}
-            placeholder="https://example.com or https://example.com/page"
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && !loading) {
+                handleAddUrl()
+              }
+            }}
+            placeholder="https://example.com or example.com"
             className="input-field flex-1"
             disabled={loading}
           />
@@ -64,13 +108,33 @@ export function TrackedLinks() {
             disabled={loading || trackedUrls.length >= maxUrls}
             className="btn-primary flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
           >
-            <Plus className="w-4 h-4" />
-            Add URL
+            {loading ? (
+              <>
+                <div className="animate-spin rounded-full h-4 w-4 border-2 border-white border-t-transparent" />
+                Adding...
+              </>
+            ) : (
+              <>
+                <Plus className="w-4 h-4" />
+                Add URL
+              </>
+            )}
           </motion.button>
         </div>
         
         {error && (
-          <p className="text-red-400 text-sm">{error}</p>
+          <div className="flex items-start gap-2 p-3 bg-red-500/10 border border-red-500/30 rounded-lg">
+            <AlertCircle className="w-4 h-4 text-red-400 flex-shrink-0 mt-0.5" />
+            <p className="text-red-400 text-sm">{error}</p>
+          </div>
+        )}
+        
+        {trackedUrls.length >= maxUrls && !isPro && (
+          <div className="mt-3 p-3 bg-forge-orange/10 border border-forge-orange/30 rounded-lg">
+            <p className="text-sm text-forge-orange">
+              🔒 You've reached the free tier limit. Upgrade to Pro to track up to 20 URLs.
+            </p>
+          </div>
         )}
       </div>
       

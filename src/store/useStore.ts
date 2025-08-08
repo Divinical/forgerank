@@ -3,6 +3,11 @@ import type { Keyword } from '../types/keyword'
 import { supabase } from '../lib/supabase'
 import { User } from '@supabase/supabase-js'
 
+const WHITELISTED_EMAILS = [
+  'ben@forgeheart.run',
+  // Add any other emails you want to whitelist for Pro features
+]
+
 type Tab = 'dashboard' | 'tracked-links' | 'backlinks' | 'keywords' | 'settings' | 'upgrade'
 
 interface Backlink {
@@ -150,7 +155,7 @@ export const useStore = create<AppState>((set, get) => ({
     }
   },
   
-  checkAuth: async () => {
+    checkAuth: async () => {
     try {
       // Load UI settings immediately
       if (chrome?.storage?.local) {
@@ -158,57 +163,71 @@ export const useStore = create<AppState>((set, get) => ({
         if (uiSettings.isDarkMode !== undefined) set({ isDarkMode: uiSettings.isDarkMode })
         if (uiSettings.notificationsEnabled !== undefined) set({ notificationsEnabled: uiSettings.notificationsEnabled })
       }
-      
+
       // Quick session check only - don't load data
       const { data: { session }, error } = await supabase.auth.getSession()
-      
+
       if (!error && session?.user) {
-        set({ 
-          user: session.user, 
+        // Whitelist check
+        const isWhitelisted = WHITELISTED_EMAILS.includes(session.user.email || '')
+
+        set({
+          user: session.user,
           isAuthenticated: true,
-          isLoading: false 
+          isPro: isWhitelisted, // immediate Pro if whitelisted
+          isLoading: false,
         })
-        
+
         // Store minimal auth state
         if (chrome?.storage?.local) {
           await chrome.storage.local.set({
             userId: session.user.id,
             userEmail: session.user.email,
-            isAuthenticated: true
+            isAuthenticated: true,
+            isPro: isWhitelisted,
           })
         }
-        
-        // Load user data after a delay to not block UI
+
+        // Load full user data after a short delay (non-blocking)
         setTimeout(() => {
           get().loadUserData()
         }, 100)
       } else {
-        set({ 
-          isAuthenticated: false, 
-          user: null, 
+        set({
+          isAuthenticated: false,
+          user: null,
           isPro: false,
-          isLoading: false 
+          isLoading: false,
         })
         // Still load tracked URLs from local storage for non-authenticated users
         await get().fetchTrackedUrls()
       }
-    } catch (error) {
-      set({ 
-        isAuthenticated: false, 
-        user: null, 
+    } catch {
+      set({
+        isAuthenticated: false,
+        user: null,
         isPro: false,
-        isLoading: false 
+        isLoading: false,
       })
       await get().fetchTrackedUrls()
     }
   },
   
   loadUserData: async () => {
-    const { user } = get()
-    if (!user) return
+  const { user } = get()
+  if (!user) return
+  
+  try {
+    // Check if user is whitelisted FIRST
+    const isWhitelisted = WHITELISTED_EMAILS.includes(user.email || '')
     
-    try {
-      // Get user profile for Pro status
+    if (isWhitelisted) {
+      set({ isPro: true })
+      if (chrome?.storage?.local) {
+        await chrome.storage.local.set({ isPro: true })
+      }
+    } else {
+      // Normal Pro status check
       const { data: profile } = await supabase
         .from('users')
         .select('*')
@@ -225,52 +244,70 @@ export const useStore = create<AppState>((set, get) => ({
           await chrome.storage.local.set({ isPro })
         }
       }
+    }
       
       // Load all user data in parallel
-      await Promise.all([
-        get().fetchTrackedUrls(),
-        get().fetchBacklinks(),
-        get().fetchKeywords()
-      ])
-    } catch (error) {
-      // Silent fail - user can still use the extension
+    await Promise.all([
+      get().fetchTrackedUrls(),
+      get().fetchBacklinks(),
+      get().fetchKeywords()
+    ])
+  } catch (error) {
+    console.error('Error loading user data:', error)
+    // Check whitelist even on error
+    const isWhitelisted = WHITELISTED_EMAILS.includes(user.email || '')
+    if (isWhitelisted) {
+      set({ isPro: true })
     }
-  },
+  }
+},
   
   // Data Actions
-  addTrackedUrl: async (url) => {
+    addTrackedUrl: async (url) => {
     const { user, isPro, trackedUrls } = get()
-    
+
     try {
-      const normalizedUrl = new URL(url).href
-      
+      // Normalize & validate URL with friendly error
+      let normalizedUrl: string
+      try {
+        normalizedUrl = new URL(url).href
+      } catch {
+        throw new Error('Invalid URL format. Please enter a valid URL like https://example.com')
+      }
+
       if (trackedUrls.includes(normalizedUrl)) {
         throw new Error('URL already tracked')
       }
-      
+
       const maxUrls = isPro ? 20 : 3
       if (trackedUrls.length >= maxUrls) {
-        throw new Error(`Maximum ${maxUrls} URLs allowed`)
+        throw new Error(`Maximum ${maxUrls} URLs allowed. ${isPro ? '' : 'Upgrade to Pro for up to 20 URLs.'}`)
       }
-      
+
       if (user) {
+        // Persist to Supabase for authenticated users
         const { error } = await supabase
           .from('tracked_urls')
           .insert({
             user_id: user.id,
             url: normalizedUrl,
-            domain: new URL(normalizedUrl).hostname
+            domain: new URL(normalizedUrl).hostname,
           })
-        
-        if (error) throw error
-        
+
+        if (error) {
+          console.error('Supabase error:', error)
+          throw new Error(error.message || 'Failed to add URL to database')
+        }
+
         await get().fetchTrackedUrls()
       } else {
+        // Local storage for guests
         const newUrls = [...trackedUrls, normalizedUrl]
         set({ trackedUrls: newUrls })
         await chrome.storage.local.set({ trackedUrls: newUrls })
       }
     } catch (error: any) {
+      console.error('addTrackedUrl error:', error)
       throw error
     }
   },
