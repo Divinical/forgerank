@@ -13,7 +13,7 @@ chrome.runtime.onInstalled.addListener(() => {
 const tabBadgeState = new Map<number, number>()
 
 // Handle messages from content scripts
-chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+chrome.runtime.onMessage.addListener((message, sender) => {
   if (message.type === 'BACKLINKS_FOUND') {
     handleBacklinksFound(message.data, sender.tab)
   } else if (message.type === 'PAGE_SCAN_RESULT') {

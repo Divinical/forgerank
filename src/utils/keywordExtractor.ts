@@ -28,12 +28,12 @@ const WEB_STOPWORDS = new Set([
 ])
 
 interface ExtractedKeyword {
-  id?: string
+  id: string
   keyword: string
   frequency: number
   relevance: 'high' | 'medium' | 'low'
   source_url?: string
-  created_at?: string
+  created_at: string
 }
 
 export function extractKeywords(
@@ -94,7 +94,7 @@ export function extractKeywords(
     }
     
     return {
-      id: sourceUrl ? `${sourceUrl}-${keyword}` : undefined,
+      id: `${keyword}-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
       keyword,
       frequency,
       relevance,
@@ -182,8 +182,7 @@ export function processKeywordsInIdle(
 
 // Extract keywords from page content when backlinks are found
 export async function extractKeywordsFromBacklinks(
-  backlinks: Array<{ source_url: string }>,
-  onProgress?: (processed: number, total: number) => void
+  backlinks: Array<{ source_url: string }>
 ): Promise<ExtractedKeyword[]> {
   // Get stored keyword sources from background
   const { localKeywordSources = {} } = await chrome.storage.local.get('localKeywordSources')
