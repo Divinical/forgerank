@@ -2,6 +2,18 @@ import { create } from 'zustand'
 import { supabase } from '../lib/supabase'
 import { User } from '@supabase/supabase-js'
 
+// Safe date utility to prevent "Invalid time value" errors
+function safeDate(value: any): Date | null {
+  if (!value) return null
+  try {
+    const date = new Date(value)
+    return isNaN(date.getTime()) ? null : date
+  } catch (error) {
+    return null
+  }
+}
+
+
 type Tab = 'dashboard' | 'tracked-links' | 'backlinks' | 'keywords' | 'settings' | 'upgrade'
 
 interface Backlink {
@@ -34,6 +46,8 @@ interface AppState {
   // UI State
   isDarkMode: boolean
   toggleDarkMode: () => void
+  notificationsEnabled: boolean
+  toggleNotifications: () => void
   
   // Modal State
   isLoginModalOpen: boolean
@@ -57,6 +71,7 @@ interface AppState {
   signIn: (provider: 'github' | 'google' | 'email', email?: string, password?: string) => Promise<void>
   signOut: () => Promise<void>
   checkAuth: () => Promise<void>
+  attemptSessionRestoration: () => Promise<void>
   addTrackedUrl: (url: string) => Promise<void>
   removeTrackedUrl: (url: string) => Promise<void>
   fetchTrackedUrls: () => Promise<void>
@@ -72,7 +87,17 @@ export const useStore = create<AppState>((set, get) => ({
   
   // UI State
   isDarkMode: true,
-  toggleDarkMode: () => set((state) => ({ isDarkMode: !state.isDarkMode })),
+  toggleDarkMode: () => set((state) => {
+    const newMode = !state.isDarkMode
+    chrome.storage.local.set({ isDarkMode: newMode })
+    return { isDarkMode: newMode }
+  }),
+  notificationsEnabled: false,
+  toggleNotifications: () => set((state) => {
+    const newValue = !state.notificationsEnabled
+    chrome.storage.local.set({ notificationsEnabled: newValue })
+    return { notificationsEnabled: newValue }
+  }),
   
   // Modal State
   isLoginModalOpen: false,
@@ -99,7 +124,7 @@ export const useStore = create<AppState>((set, get) => ({
       
       if (provider === 'email' && email && password) {
         result = await supabase.auth.signInWithPassword({ email, password })
-      } else if (provider === 'github' || provider === 'google') {
+      } else {
         result = await supabase.auth.signInWithOAuth({
           provider,
           options: {
@@ -110,7 +135,6 @@ export const useStore = create<AppState>((set, get) => ({
       
       if (result?.error) throw result.error
       
-      // Check auth will handle the rest
       await get().checkAuth()
       set({ isLoginModalOpen: false })
     } catch (error) {
@@ -137,62 +161,68 @@ export const useStore = create<AppState>((set, get) => ({
   },
   
   checkAuth: async () => {
+    set({ isLoading: true })
+    
     try {
-      set({ isLoading: true })
+      // Load UI settings
+      if (chrome?.storage?.local) {
+        const uiSettings = await chrome.storage.local.get(['isDarkMode', 'notificationsEnabled'])
+        if (uiSettings.isDarkMode !== undefined) set({ isDarkMode: uiSettings.isDarkMode })
+        if (uiSettings.notificationsEnabled !== undefined) set({ notificationsEnabled: uiSettings.notificationsEnabled })
+      }
+      
+      // Check Supabase session
+      const { data: { session }, error } = await supabase.auth.getSession()
+      
+      if (error || !session) {
+        set({ isAuthenticated: false, user: null, isPro: false })
+        await get().fetchTrackedUrls()
+        return
+      }
       
       const { data: { user } } = await supabase.auth.getUser()
+      if (!user) {
+        set({ isAuthenticated: false, user: null, isPro: false })
+        await get().fetchTrackedUrls()
+        return
+      }
       
-      if (user) {
-        // Fetch user profile
-        const { data: profile } = await supabase
-          .from('users')
-          .select('*')
-          .eq('id', user.id)
-          .single()
-        
-        if (profile) {
-          const isPro = profile.is_pro || 
-            (profile.trial_ends_at && new Date(profile.trial_ends_at) > new Date())
-          
-          const trialDaysLeft = profile.trial_ends_at 
-            ? Math.max(0, Math.ceil((new Date(profile.trial_ends_at).getTime() - Date.now()) / (1000 * 60 * 60 * 24)))
-            : 0
-          
-          set({
-            user,
-            isAuthenticated: true,
-            isPro,
-            trialDaysLeft
-          })
-          
-          // Store auth state in chrome storage
-          await chrome.storage.local.set({
-            userId: user.id,
-            isAuthenticated: true,
-            isPro
-          })
-          
-          // Fetch user data
-          await Promise.all([
-            get().fetchTrackedUrls(),
-            get().fetchBacklinks(),
-            get().fetchKeywords()
-          ])
-        }
-      } else {
-        set({
-          user: null,
-          isAuthenticated: false,
-          isPro: false
-        })
-        
+      // Get user profile
+      const { data: profile } = await supabase
+        .from('users')
+        .select('*')
+        .eq('id', user.id)
+        .single()
+      
+      const userProfile = profile || { is_pro: false, trial_ends_at: null }
+      const trialEndDate = safeDate(userProfile.trial_ends_at)
+      const isPro = userProfile.is_pro || (trialEndDate && trialEndDate > new Date())
+      
+      const trialDaysLeft = trialEndDate 
+        ? Math.max(0, Math.ceil((trialEndDate.getTime() - Date.now()) / (1000 * 60 * 60 * 24)))
+        : 0
+      
+      set({ user, isAuthenticated: true, isPro, trialDaysLeft })
+      
+      // Store minimal auth state
+      if (chrome?.storage?.local) {
         await chrome.storage.local.set({
-          isAuthenticated: false,
-          isPro: false
+          userId: user.id,
+          userEmail: user.email,
+          isAuthenticated: true,
+          isPro
         })
       }
+      
+      await Promise.all([
+        get().fetchTrackedUrls(),
+        get().fetchBacklinks(),
+        get().fetchKeywords()
+      ])
+      
     } catch (error) {
-      console.error('Auth check error:', error)
+      set({ isAuthenticated: false, user: null, isPro: false })
+      await get().fetchTrackedUrls()
     } finally {
       set({ isLoading: false })
     }
@@ -205,6 +235,11 @@ export const useStore = create<AppState>((set, get) => ({
     // Validate URL
     try {
       const normalizedUrl = new URL(url).href
+      
+      // Check for duplicates
+      if (trackedUrls.includes(normalizedUrl)) {
+        throw new Error('URL already tracked')
+      }
       
       // Check limits
       const maxUrls = isPro ? 20 : 3
@@ -226,7 +261,7 @@ export const useStore = create<AppState>((set, get) => ({
         
         await get().fetchTrackedUrls()
       } else {
-        // Save locally
+        // Save locally with immediate state and storage update
         const newUrls = [...trackedUrls, normalizedUrl]
         set({ trackedUrls: newUrls })
         await chrome.storage.local.set({ trackedUrls: newUrls })
@@ -260,60 +295,94 @@ export const useStore = create<AppState>((set, get) => ({
   fetchTrackedUrls: async () => {
     const { user } = get()
     
-    if (user) {
-      const { data, error } = await supabase
-        .from('tracked_urls')
-        .select('url')
-        .eq('user_id', user.id)
-        .eq('is_active', true)
-      
-      if (!error && data) {
-        const urls = data.map(d => d.url)
+    try {
+      if (user) {
+        const { data, error } = await supabase
+          .from('tracked_urls')
+          .select('url')
+          .eq('user_id', user.id)
+          .eq('is_active', true)
+        
+        if (!error && data) {
+          const urls = data.map(d => d.url)
+          set({ trackedUrls: urls })
+          await chrome.storage.local.set({ trackedUrls: urls })
+        }
+      } else {
+        // Load from local storage
+        const result = await chrome.storage.local.get('trackedUrls')
+        const urls = result.trackedUrls || []
         set({ trackedUrls: urls })
-        await chrome.storage.local.set({ trackedUrls: urls })
       }
-    } else {
-      // Load from local storage
-      const result = await chrome.storage.local.get('trackedUrls')
-      set({ trackedUrls: result.trackedUrls || [] })
+    } catch (error) {
+      console.error('Error fetching tracked URLs:', error)
     }
   },
   
   fetchBacklinks: async () => {
     const { user } = get()
     
-    if (user) {
-      const { data, error } = await supabase
-        .from('backlinks')
-        .select('*')
-        .eq('user_id', user.id)
-        .order('created_at', { ascending: false })
-        .limit(100)
-      
-      if (!error && data) {
-        set({ backlinks: data })
+    try {
+      if (user) {
+        const { data, error } = await supabase
+          .from('backlinks')
+          .select('*')
+          .eq('user_id', user.id)
+          .order('created_at', { ascending: false })
+          .limit(100)
+        
+        if (!error && data) {
+          set({ backlinks: data })
+        } else {
+          // If there's an error or no data, set empty array to clear UI
+          set({ backlinks: [] })
+        }
+      } else {
+        // Load from local storage
+        const result = await chrome.storage.local.get('localBacklinks')
+        const backlinks = result.localBacklinks || []
+        set({ backlinks })
       }
-    } else {
-      // Load from local storage
-      const result = await chrome.storage.local.get('localBacklinks')
-      set({ backlinks: result.localBacklinks || [] })
+    } catch (error) {
+      console.error('Error fetching backlinks:', error)
+      // Clear state on any unexpected error to prevent stale data
+      set({ backlinks: [] })
     }
   },
   
   fetchKeywords: async () => {
     const { user } = get()
     
-    if (user) {
-      const { data, error } = await supabase
-        .from('keywords')
-        .select('*')
-        .eq('user_id', user.id)
-        .order('frequency', { ascending: false })
-        .limit(50)
-      
-      if (!error && data) {
-        set({ keywords: data })
+    try {
+      if (user) {
+        // Fetch from Supabase for authenticated users
+        const { data, error } = await supabase
+          .from('keywords')
+          .select('*')
+          .eq('user_id', user.id)
+          .order('frequency', { ascending: false })
+          .limit(50)
+        
+        if (!error && data) {
+          set({ keywords: data })
+        } else {
+          // If there's an error or no data, set empty array to clear UI
+          set({ keywords: [] })
+        }
+      } else {
+        // Load from local storage for non-authenticated users
+        if (!chrome || !chrome.storage || !chrome.storage.local) {
+          return
+        }
+        
+        const result = await chrome.storage.local.get('localKeywords')
+        const keywords = result.localKeywords || []
+        set({ keywords })
       }
+    } catch (error) {
+      console.error('Error fetching keywords:', error)
+      // Clear state on any unexpected error to prevent stale data
+      set({ keywords: [] })
     }
   },
   
@@ -363,5 +432,7 @@ export const useStore = create<AppState>((set, get) => ({
     
     // Refresh backlinks
     await get().fetchBacklinks()
-  }
+  },
+  
+  attemptSessionRestoration: async () => {}
 }))

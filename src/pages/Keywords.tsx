@@ -1,16 +1,25 @@
 import { motion } from 'framer-motion'
-import { Hash, Filter, Download } from 'lucide-react'
+import { Hash, Download } from 'lucide-react'
 import { useStore } from '../store/useStore'
 import { useState } from 'react'
 
+// Safe date utility
+function safeDateString(): string {
+  try {
+    return new Date().toISOString().split('T')[0]
+  } catch (error) {
+    return new Date(Date.now()).toISOString().split('T')[0]
+  }
+}
+
 export function Keywords() {
-  const { keywords, isPro, isAuthenticated } = useStore()
+  const { keywords, isPro } = useStore()
   const [filterRelevance, setFilterRelevance] = useState<string>('all')
   
-  // Group keywords by relevance
-  const filteredKeywords = filterRelevance === 'all' 
-    ? keywords 
-    : keywords.filter(k => k.relevance === filterRelevance)
+  // Group keywords by relevance (Pro users only, Free users see all)
+  const filteredKeywords = (isPro && filterRelevance !== 'all')
+    ? keywords.filter(k => k.relevance === filterRelevance)
+    : keywords
   
   const highRelevanceCount = keywords.filter(k => k.relevance === 'high').length
   const totalOccurrences = keywords.reduce((sum, k) => sum + k.frequency, 0)
@@ -51,7 +60,7 @@ export function Keywords() {
     const url = window.URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = url
-    a.download = `forgerank-keywords-${new Date().toISOString().split('T')[0]}.csv`
+    a.download = `forgerank-keywords-${safeDateString()}.csv`
     a.click()
     window.URL.revokeObjectURL(url)
   }
@@ -71,29 +80,35 @@ export function Keywords() {
           </p>
         </div>
         
-        {isPro && (
-          <div className="flex gap-3">
-            <select
-              value={filterRelevance}
-              onChange={(e) => setFilterRelevance(e.target.value)}
-              className="btn-secondary flex items-center gap-2"
-            >
-              <option value="all">All Keywords</option>
-              <option value="high">High Relevance</option>
-              <option value="medium">Medium Relevance</option>
-              <option value="low">Low Relevance</option>
-            </select>
-            <motion.button
-              whileHover={{ scale: 1.02 }}
-              whileTap={{ scale: 0.98 }}
-              onClick={handleExport}
-              className="btn-primary flex items-center gap-2"
-            >
-              <Download className="w-4 h-4" />
-              Export
-            </motion.button>
-          </div>
-        )}
+        <div className="flex gap-3">
+          {isPro ? (
+            <>
+              <select
+                value={filterRelevance}
+                onChange={(e) => setFilterRelevance(e.target.value)}
+                className="btn-secondary flex items-center gap-2"
+              >
+                <option value="all">All Keywords</option>
+                <option value="high">High Relevance</option>
+                <option value="medium">Medium Relevance</option>
+                <option value="low">Low Relevance</option>
+              </select>
+              <motion.button
+                whileHover={{ scale: 1.02 }}
+                whileTap={{ scale: 0.98 }}
+                onClick={handleExport}
+                className="btn-primary flex items-center gap-2"
+              >
+                <Download className="w-4 h-4" />
+                Export
+              </motion.button>
+            </>
+          ) : keywords.length > 0 && (
+            <div className="flex items-center gap-2 text-zinc-400 text-sm">
+              <span>🔒 Filter & Export available with Pro</span>
+            </div>
+          )}
+        </div>
       </div>
       
       <div className="bg-forge-light rounded-2xl p-8">

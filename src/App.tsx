@@ -9,14 +9,33 @@ import { Keywords } from './pages/Keywords'
 import { Settings } from './pages/Settings'
 import { Upgrade } from './pages/Upgrade'
 import { useStore } from './store/useStore'
+import { supabase } from './lib/supabase'
 
 function App() {
-  const { activeTab, isDarkMode, checkAuth, syncPendingBacklinks, isLoading } = useStore()
+  const { activeTab, isDarkMode, checkAuth, syncPendingBacklinks, fetchBacklinks, isLoading } = useStore()
   
   // Check authentication on mount
   useEffect(() => {
     checkAuth()
   }, [])
+  
+  // Listen for backlink updates from background script
+  useEffect(() => {
+    const messageListener = (message: any) => {
+      if (message.type === 'BACKLINKS_UPDATED') {
+        console.log('🔄 App: Received backlinks update, refreshing data')
+        fetchBacklinks()
+        // Also refresh keywords since they're extracted from the same source
+        useStore.getState().fetchKeywords()
+      }
+    }
+    
+    chrome.runtime.onMessage.addListener(messageListener)
+    
+    return () => {
+      chrome.runtime.onMessage.removeListener(messageListener)
+    }
+  }, [fetchBacklinks])
   
   // Sync pending backlinks periodically
   useEffect(() => {
@@ -73,7 +92,7 @@ function App() {
       <SidebarTabSwitcher />
       
       {/* Main Content */}
-      <main className="flex-1 overflow-y-auto">
+      <main className="flex-1 min-w-0 overflow-y-auto">
         {renderTabContent()}
       </main>
       

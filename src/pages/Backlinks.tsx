@@ -3,6 +3,18 @@ import { ExternalLink, Clock, AlertCircle, CheckCircle, XCircle } from 'lucide-r
 import { useStore } from '../store/useStore'
 import { format } from 'date-fns'
 
+// Safe date formatting utility
+function safeFormat(dateValue: any, formatString: string, fallback: string = 'Invalid date'): string {
+  if (!dateValue) return fallback
+  try {
+    const date = new Date(dateValue)
+    if (isNaN(date.getTime())) return fallback
+    return format(date, formatString)
+  } catch (error) {
+    return fallback
+  }
+}
+
 export function Backlinks() {
   const { backlinks, isPro, isAuthenticated } = useStore()
   
@@ -116,7 +128,7 @@ export function Backlinks() {
                     <td className="px-6 py-4">
                       <div className="flex items-center gap-2 text-zinc-400 text-sm">
                         <Clock className="w-4 h-4" />
-                        {format(new Date(backlink.first_seen_at), 'MMM dd, HH:mm')}
+                        {safeFormat(backlink.first_seen_at, 'MMM dd, HH:mm')}
                       </div>
                     </td>
                     {isPro && (

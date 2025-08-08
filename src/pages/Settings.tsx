@@ -2,10 +2,29 @@ import { motion } from 'framer-motion'
 import { Moon, Sun, Trash2, Download, RefreshCw, Bell, LogOut } from 'lucide-react'
 import { useStore } from '../store/useStore'
 import { useState } from 'react'
+import { ResetConfirmModal } from '../components/ResetConfirmModal'
+
+// Safe date utilities
+function safeToISOString(): string {
+  try {
+    return new Date().toISOString()
+  } catch (error) {
+    return new Date(Date.now()).toISOString()
+  }
+}
+
+function safeDateString(): string {
+  try {
+    return new Date().toISOString().split('T')[0]
+  } catch (error) {
+    return new Date(Date.now()).toISOString().split('T')[0]
+  }
+}
 
 export function Settings() {
-  const { isDarkMode, toggleDarkMode, isAuthenticated, user, signOut, backlinks, keywords } = useStore()
+  const { isDarkMode, toggleDarkMode, notificationsEnabled, toggleNotifications, isAuthenticated, user, signOut, backlinks, keywords } = useStore()
   const [loading, setLoading] = useState<string>('')
+  const [showResetModal, setShowResetModal] = useState(false)
   
   const handleExportAllData = () => {
     if (!isAuthenticated) return
@@ -14,7 +33,7 @@ export function Settings() {
     
     // Create JSON export
     const exportData = {
-      exportDate: new Date().toISOString(),
+      exportDate: safeToISOString(),
       user: {
         email: user?.email,
         id: user?.id
@@ -28,7 +47,7 @@ export function Settings() {
     const url = window.URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = url
-    a.download = `forgerank-export-${new Date().toISOString().split('T')[0]}.json`
+    a.download = `forgerank-export-${safeDateString()}.json`
     a.click()
     window.URL.revokeObjectURL(url)
     
@@ -38,32 +57,61 @@ export function Settings() {
   const handleClearCache = async () => {
     setLoading('cache')
     
-    // Clear local storage except auth data
-    const authData = await chrome.storage.local.get(['userId', 'isAuthenticated', 'isPro'])
+    // Clear local storage except auth data, tracked URLs, and UI settings
+    const preserveData = await chrome.storage.local.get([
+      'userId', 'userEmail', 'isAuthenticated', 'isPro', 'lastAuthCheck',
+      'trackedUrls', 'isDarkMode', 'notificationsEnabled'
+    ])
     await chrome.storage.local.clear()
-    await chrome.storage.local.set(authData)
+    await chrome.storage.local.set(preserveData)
     
-    // Refresh data
+    console.log('🧹 Reset Findings: Preserved tracked URLs and settings:', preserveData.trackedUrls)
+    
+    // Immediately clear UI state to ensure responsiveness
+    useStore.setState({ backlinks: [], keywords: [] })
+    
+    // Refresh data (this will confirm cleared state from storage)
     await useStore.getState().fetchBacklinks()
     await useStore.getState().fetchKeywords()
+    await useStore.getState().fetchTrackedUrls()
+    
+    // Notify all tabs to reload scanner state with preserved tracked URLs
+    try {
+      const tabs = await chrome.tabs.query({})
+      for (const tab of tabs) {
+        if (tab.id) {
+          chrome.tabs.sendMessage(tab.id, { 
+            type: 'RELOAD_SCANNER_STATE',
+            trackedUrls: preserveData.trackedUrls || []
+          }).catch(() => {
+            // Ignore errors for tabs that don't have content script
+          })
+        }
+      }
+    } catch (error) {
+      console.log('🧹 Reset Findings: Could not notify tabs to reload scanner state')
+    }
     
     setTimeout(() => setLoading(''), 1000)
   }
   
   const handleResetData = async () => {
-    if (!confirm('Are you sure you want to reset all data? This cannot be undone.')) {
-      return
-    }
-    
     setLoading('reset')
     
-    // Clear everything
-    await chrome.storage.local.clear()
-    
-    // Sign out user
-    await signOut()
-    
-    setTimeout(() => setLoading(''), 1000)
+    try {
+      // Clear everything
+      await chrome.storage.local.clear()
+      
+      // Sign out user
+      await signOut()
+      
+      console.log('🗑️ Reset All: All data cleared successfully')
+    } catch (error) {
+      console.error('🗑️ Reset All: Error clearing data:', error)
+    } finally {
+      setShowResetModal(false)
+      setTimeout(() => setLoading(''), 1000)
+    }
   }
   
   const handleSignOut = async () => {
@@ -131,8 +179,18 @@ export function Settings() {
                 </div>
               </div>
               
-              <button className="relative w-12 h-6 rounded-full bg-zinc-600">
-                <div className="absolute top-1 left-1 w-4 h-4 bg-white rounded-full" />
+              <button
+                onClick={toggleNotifications}
+                className={`
+                  relative w-12 h-6 rounded-full transition-colors duration-200
+                  ${notificationsEnabled ? 'bg-forge-orange' : 'bg-zinc-600'}
+                `}
+              >
+                <motion.div
+                  className="absolute top-1 w-4 h-4 bg-white rounded-full"
+                  animate={{ x: notificationsEnabled ? 24 : 2 }}
+                  transition={{ type: 'spring', stiffness: 300, damping: 30 }}
+                />
               </button>
             </div>
           </div>
@@ -162,13 +220,13 @@ export function Settings() {
               className="w-full btn-secondary flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
             >
               <RefreshCw className="w-4 h-4" />
-              {loading === 'cache' ? 'Clearing...' : 'Clear Cache'}
+              {loading === 'cache' ? 'Resetting...' : 'Reset Findings'}
             </motion.button>
             
             <motion.button
               whileHover={{ scale: 1.02 }}
               whileTap={{ scale: 0.98 }}
-              onClick={handleResetData}
+              onClick={() => setShowResetModal(true)}
               disabled={loading === 'reset'}
               className="w-full bg-red-500/10 text-red-400 px-4 py-2 rounded-lg font-medium
                 hover:bg-red-500/20 transition-colors duration-200 flex items-center justify-center gap-2
@@ -218,6 +276,14 @@ export function Settings() {
           </div>
         )}
       </div>
+      
+      {/* Reset Confirmation Modal */}
+      <ResetConfirmModal
+        isOpen={showResetModal}
+        onClose={() => setShowResetModal(false)}
+        onConfirm={handleResetData}
+        isLoading={loading === 'reset'}
+      />
     </motion.div>
   )
 }
