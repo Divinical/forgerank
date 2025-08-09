@@ -402,6 +402,8 @@ export const useStore = create<AppState>((set, get) => ({
       const localResult = await chrome.storage.local.get('localBacklinks')
       const localBacklinks = localResult.localBacklinks || []
       
+      console.log('UI: localBacklinks length =', localBacklinks.length)
+      
       // Transform local backlinks to match expected shape
       const transformedBacklinks = localBacklinks.map((bl: any, index: number) => ({
         id: bl.id || `local-${index}-${Date.now()}`,
@@ -416,6 +418,8 @@ export const useStore = create<AppState>((set, get) => ({
         last_checked_at: bl.last_checked_at || bl.timestamp,
         created_at: bl.created_at || bl.timestamp || new Date().toISOString()
       }))
+      
+      console.table(transformedBacklinks.slice(0, 3)) // Show first 3 rows to verify shape
       
       // Set local backlinks immediately
       set({ backlinks: transformedBacklinks })
@@ -550,3 +554,13 @@ export const useStore = create<AppState>((set, get) => ({
     }
   }
 }))
+
+// Add runtime listener for background notifications
+if (chrome?.runtime?.onMessage) {
+  chrome.runtime.onMessage.addListener((msg) => {
+    if (msg?.type === 'BACKLINKS_UPDATED') {
+      // re-read localBacklinks and update state
+      useStore.getState().fetchBacklinks()
+    }
+  })
+}

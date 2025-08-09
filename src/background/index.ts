@@ -14,29 +14,53 @@ chrome.runtime.onInstalled.addListener(() => {
 const tabBadges = new Map<number, number>()
 
 // Message handler - just store and notify
-chrome.runtime.onMessage.addListener((message, sender) => {
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (!sender.tab?.id) return
   
   switch(message.type) {
     case 'BACKLINKS_FOUND':
       handleBacklinksFound(message.data, sender.tab.id)
-      break
+        .then(() => sendResponse({ ok: true }))
+        .catch((error) => {
+          console.error('BG: handleBacklinksFound failed:', error)
+          sendResponse({ ok: false, error: error.message })
+        })
+      return true // Keep message port open for async response
     case 'PAGE_SCAN_RESULT':
       updateBadge(message.data, sender.tab.id)
+      sendResponse({ ok: true })
       break
   }
 })
 
 async function handleBacklinksFound(data: any, tabId: number) {
+  console.log('BG: incoming links count =', data.links?.length || 0)
+  
   // Just store the raw data - no processing
   const { localBacklinks = [] } = await chrome.storage.local.get('localBacklinks')
   
-  // Simple append with limit
-  const newBacklinks = [...localBacklinks, ...data.links].slice(-500)
+  // Minimal dedupe using Set keyed by source_url|target_url
+  const existingKeys = new Set(
+    localBacklinks.map((bl: any) => 
+      `${bl.source_url || bl.sourceUrl || ''}|${bl.target_url || bl.targetUrl || bl.href || ''}`
+    )
+  )
+  
+  // Filter incoming links against existing keys
+  const uniqueIncomingLinks = data.links.filter((bl: any) => {
+    const key = `${bl.source_url || bl.sourceUrl || ''}|${bl.target_url || bl.targetUrl || bl.href || ''}`
+    return !existingKeys.has(key)
+  })
+  
+  // Append unique links and cap at 500
+  const newBacklinks = [...localBacklinks, ...uniqueIncomingLinks].slice(-500)
   await chrome.storage.local.set({ 
     localBacklinks: newBacklinks,
     lastBacklinkUpdate: Date.now() 
   })
+  
+  console.log('BG: new localBacklinks length =', newBacklinks.length)
+  console.log('BG: saved after dedupe length =', uniqueIncomingLinks.length)
   
   // Update badge
   const count = data.links.length
