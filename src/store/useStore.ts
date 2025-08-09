@@ -3,10 +3,8 @@ import type { Keyword } from '../types/keyword'
 import { supabase } from '../lib/supabase'
 import { User } from '@supabase/supabase-js'
 
-const WHITELISTED_EMAILS = [
-  'ben@forgeheart.run',
-  // Add any other emails you want to whitelist for Pro features
-]
+// Remove hardcoded whitelist - use Supabase user table instead
+const IS_DEV = import.meta.env.DEV
 
 type Tab = 'dashboard' | 'tracked-links' | 'backlinks' | 'keywords' | 'settings' | 'upgrade'
 
@@ -122,107 +120,58 @@ export const useStore = create<AppState>((set, get) => ({
         // Try sign in first
         result = await supabase.auth.signInWithPassword({ email, password })
         
-        // If sign in fails with invalid credentials, try sign up
+        // If user doesn't exist, sign up
         if (result.error?.message?.includes('Invalid login credentials')) {
           result = await supabase.auth.signUp({ email, password })
         }
-      } else {
+      } else if (provider === 'github' || provider === 'google') {
         result = await supabase.auth.signInWithOAuth({
-          provider: provider as 'github' | 'google',
+          provider,
           options: {
-            redirectTo: chrome.runtime.getURL('index.html')
+            redirectTo: chrome.identity.getRedirectURL()
           }
         })
       }
       
       if (result?.error) throw result.error
       
-      // Auth state change listener will handle the rest
+      // For OAuth providers, result.data contains { provider, url } not user data
+      // User data comes later via session callback, so just close modal
+      if (provider === 'email' && result?.data && 'user' in result.data && result.data.user) {
+        set({ user: result.data.user, isAuthenticated: true })
+        await get().loadUserData()
+      }
+      // For OAuth, the auth state change listener will handle setting user data
+      
       set({ isLoginModalOpen: false })
-    } catch (error: any) {
+    } catch (error) {
+      console.error('Sign in error:', error)
       throw error
     }
   },
   
   signOut: async () => {
-    try {
-      await supabase.auth.signOut()
-      
-      // Clear auth data but keep local backlinks and tracked URLs
-      const preserveData = await chrome.storage.local.get(['localBacklinks', 'trackedUrls', 'isDarkMode', 'notificationsEnabled'])
-      await chrome.storage.local.clear()
-      await chrome.storage.local.set(preserveData)
-      
-      set({
-        user: null,
-        isAuthenticated: false,
-        isPro: false,
-        trackedUrls: [],
-        backlinks: [],
-        keywords: [] as Keyword[]
-      })
-    } catch (error) {
-      // Silent fail
-    }
+    await supabase.auth.signOut()
+    set({ 
+      user: null, 
+      isAuthenticated: false, 
+      isPro: false,
+      backlinks: [],
+      keywords: []
+    })
+    chrome.storage.local.remove(['isPro'])
   },
   
   checkAuth: async () => {
     try {
-      // Load UI settings immediately
-      if (chrome?.storage?.local) {
-        const uiSettings = await chrome.storage.local.get(['isDarkMode', 'notificationsEnabled'])
-        if (uiSettings.isDarkMode !== undefined) set({ isDarkMode: uiSettings.isDarkMode })
-        if (uiSettings.notificationsEnabled !== undefined) set({ notificationsEnabled: uiSettings.notificationsEnabled })
+      const { data: { session } } = await supabase.auth.getSession()
+      if (session?.user) {
+        set({ user: session.user, isAuthenticated: true })
+        // Load user data in background
+        setTimeout(() => get().loadUserData(), 100)
       }
-
-      // Quick session check only - don't load data
-      const { data: { session }, error } = await supabase.auth.getSession()
-
-      if (!error && session?.user) {
-        // Whitelist check
-        const isWhitelisted = WHITELISTED_EMAILS.includes(session.user.email || '')
-
-        set({
-          user: session.user,
-          isAuthenticated: true,
-          isPro: isWhitelisted, // immediate Pro if whitelisted
-          isLoading: false,
-        })
-
-        // Store minimal auth state
-        if (chrome?.storage?.local) {
-          await chrome.storage.local.set({
-            userId: session.user.id,
-            userEmail: session.user.email,
-            isAuthenticated: true,
-            isPro: isWhitelisted,
-          })
-        }
-
-        // Load full user data after a short delay (non-blocking)
-        setTimeout(() => {
-          get().loadUserData()
-        }, 100)
-      } else {
-        set({
-          isAuthenticated: false,
-          user: null,
-          isPro: false,
-          isLoading: false,
-        })
-        // Still load tracked URLs from local storage for non-authenticated users
-        await get().fetchTrackedUrls()
-        await get().fetchBacklinks() // Load local backlinks
-      }
-    } catch {
-      set({
-        isAuthenticated: false,
-        user: null,
-        isPro: false,
-        isLoading: false,
-      })
-      await get().fetchTrackedUrls()
-      await get().fetchBacklinks() // Load local backlinks
+    } catch (error) {
+      console.error('Auth check failed:', error)
     }
   },
   
@@ -231,31 +180,32 @@ export const useStore = create<AppState>((set, get) => ({
     if (!user) return
     
     try {
-      // Check if user is whitelisted FIRST
-      const isWhitelisted = WHITELISTED_EMAILS.includes(user.email || '')
+      // Check Pro status from database
+      const { data: profile } = await supabase
+        .from('users')
+        .select('*')
+        .eq('id', user.id)
+        .single()
       
-      if (isWhitelisted) {
-        set({ isPro: true })
-        if (chrome?.storage?.local) {
-          await chrome.storage.local.set({ isPro: true })
-        }
-      } else {
-        // Normal Pro status check
-        const { data: profile } = await supabase
-          .from('users')
-          .select('*')
-          .eq('id', user.id)
-          .single()
+      if (profile) {
+        // Check if user is pro OR has active trial
+        const isPro = profile.is_pro || 
+          (profile.trial_ends_at && new Date(profile.trial_ends_at) > new Date())
         
-        if (profile) {
-          const isPro = profile.is_pro || 
-            (profile.trial_ends_at && new Date(profile.trial_ends_at) > new Date())
-          
-          set({ isPro })
-          
-          if (chrome?.storage?.local) {
-            await chrome.storage.local.set({ isPro })
-          }
+        set({ isPro })
+        
+        if (chrome?.storage?.local) {
+          await chrome.storage.local.set({ isPro })
+        }
+        
+        // Log for debugging
+        if (IS_DEV) {
+          console.log('User Pro Status:', {
+            email: user.email,
+            is_pro: profile.is_pro,
+            trial_ends_at: profile.trial_ends_at,
+            isPro
+          })
         }
       }
       
@@ -273,11 +223,6 @@ export const useStore = create<AppState>((set, get) => ({
       
     } catch (error) {
       console.error('Error loading user data:', error)
-      // Check whitelist even on error
-      const isWhitelisted = WHITELISTED_EMAILS.includes(user.email || '')
-      if (isWhitelisted) {
-        set({ isPro: true })
-      }
     }
   },
   
@@ -286,7 +231,7 @@ export const useStore = create<AppState>((set, get) => ({
     const { user, isPro, trackedUrls } = get()
 
     try {
-      // Normalize & validate URL with friendly error
+      // Normalize & validate URL
       let normalizedUrl: string
       try {
         normalizedUrl = new URL(url).href
@@ -303,94 +248,83 @@ export const useStore = create<AppState>((set, get) => ({
         throw new Error(`Maximum ${maxUrls} URLs allowed. ${isPro ? '' : 'Upgrade to Pro for up to 20 URLs.'}`)
       }
 
-      const newUrls = [...trackedUrls, normalizedUrl]
+      const updatedUrls = [...trackedUrls, normalizedUrl]
       
-      // Always update local storage first for immediate effect
-      set({ trackedUrls: newUrls })
-      await chrome.storage.local.set({ trackedUrls: newUrls })
-      
-      // Then sync to Supabase if authenticated
-      if (user) {
-        try {
-          const { error } = await supabase
-            .from('tracked_urls')
-            .insert({
-              user_id: user.id,
-              url: normalizedUrl,
-              domain: new URL(normalizedUrl).hostname,
-            })
+      // Always save to local storage
+      await chrome.storage.local.set({ trackedUrls: updatedUrls })
+      set({ trackedUrls: updatedUrls })
 
-          if (error) {
-            console.error('Supabase sync error:', error)
-            // Don't throw - local update succeeded
-          }
-        } catch (e) {
-          console.error('Supabase sync failed:', e)
-          // Don't throw - local update succeeded
+      // Save to Supabase if authenticated
+      if (user) {
+        const { error } = await supabase
+          .from('tracked_urls')
+          .insert({
+            user_id: user.id,
+            url: normalizedUrl,
+            domain: new URL(normalizedUrl).hostname
+          })
+
+        if (error) {
+          console.error('Failed to sync to Supabase:', error)
+          // Don't throw - local save was successful
         }
       }
-    } catch (error: any) {
-      console.error('addTrackedUrl error:', error)
+
+      // Notify scanner to reload
+      chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+        if (tabs[0]?.id) {
+          chrome.tabs.sendMessage(tabs[0].id, {
+            type: 'RELOAD_SCANNER_STATE',
+            trackedUrls: updatedUrls
+          })
+        }
+      })
+
+    } catch (error) {
+      console.error('Error adding tracked URL:', error)
       throw error
     }
   },
   
   removeTrackedUrl: async (url) => {
     const { user, trackedUrls } = get()
+    const updatedUrls = trackedUrls.filter(u => u !== url)
     
-    const newUrls = trackedUrls.filter(u => u !== url)
+    // Update local storage
+    await chrome.storage.local.set({ trackedUrls: updatedUrls })
+    set({ trackedUrls: updatedUrls })
     
-    // Update local first for immediate effect
-    set({ trackedUrls: newUrls })
-    await chrome.storage.local.set({ trackedUrls: newUrls })
-    
-    // Then sync to Supabase if authenticated
+    // Update Supabase if authenticated
     if (user) {
-      try {
-        const { error } = await supabase
-          .from('tracked_urls')
-          .delete()
-          .eq('user_id', user.id)
-          .eq('url', url)
-        
-        if (error) {
-          console.error('Supabase delete error:', error)
-        }
-      } catch (e) {
-        console.error('Supabase delete failed:', e)
-      }
+      await supabase
+        .from('tracked_urls')
+        .delete()
+        .eq('user_id', user.id)
+        .eq('url', url)
     }
   },
   
   fetchTrackedUrls: async () => {
     const { user } = get()
     
-    try {
-      // Always load from local storage first
-      const localResult = await chrome.storage.local.get('trackedUrls')
-      const localUrls = localResult.trackedUrls || []
-      set({ trackedUrls: localUrls })
+    // Always load from local first
+    const localResult = await chrome.storage.local.get('trackedUrls')
+    const localUrls = localResult.trackedUrls || []
+    set({ trackedUrls: localUrls })
+    
+    // Then fetch from Supabase if authenticated
+    if (user) {
+      const { data, error } = await supabase
+        .from('tracked_urls')
+        .select('*')
+        .eq('user_id', user.id)
       
-      // Then sync from Supabase if authenticated
-      if (user) {
-        const { data, error } = await supabase
-          .from('tracked_urls')
-          .select('url')
-          .eq('user_id', user.id)
-          .eq('is_active', true)
-        
-        if (!error && data) {
-          const supabaseUrls = data.map(d => d.url)
-          
-          // Merge local and Supabase URLs (deduplicate)
-          const mergedUrls = Array.from(new Set([...localUrls, ...supabaseUrls]))
-          
-          set({ trackedUrls: mergedUrls })
-          await chrome.storage.local.set({ trackedUrls: mergedUrls })
-        }
+      if (!error && data) {
+        const supabaseUrls = data.map(d => d.url)
+        const mergedUrls = [...new Set([...localUrls, ...supabaseUrls])]
+        await chrome.storage.local.set({ trackedUrls: mergedUrls })
+        set({ trackedUrls: mergedUrls })
       }
-    } catch (error) {
-      console.error('fetchTrackedUrls error:', error)
     }
   },
   
@@ -398,34 +332,46 @@ export const useStore = create<AppState>((set, get) => ({
     const { user } = get()
     
     try {
-      // ALWAYS load from local storage first for immediate display
+      // ALWAYS load from local storage first
       const localResult = await chrome.storage.local.get('localBacklinks')
       const localBacklinks = localResult.localBacklinks || []
       
-      console.log('UI: localBacklinks length =', localBacklinks.length)
+      if (IS_DEV) {
+        console.log('Raw local backlinks:', localBacklinks.slice(0, 2))
+      }
       
-      // Transform local backlinks to match expected shape
-      const transformedBacklinks = localBacklinks.map((bl: any, index: number) => ({
-        id: bl.id || `local-${index}-${Date.now()}`,
-        source_url: bl.source_url || bl.sourceUrl || '',
-        source_domain: bl.source_domain || bl.sourceDomain || (bl.source_url ? new URL(bl.source_url).hostname : ''),
-        target_url: bl.target_url || bl.targetUrl || bl.href || '',
-        anchor_text: bl.anchor_text || bl.anchorText || null,
-        context_type: bl.context_type || bl.contextType || 'generic',
-        is_broken: bl.is_broken || false,
-        http_status: bl.http_status || null,
-        first_seen_at: bl.first_seen_at || bl.timestamp || bl.created_at,
-        last_checked_at: bl.last_checked_at || bl.timestamp,
-        created_at: bl.created_at || bl.timestamp || new Date().toISOString()
-      }))
+      // Normalize the data structure - handle both old and new field names
+      const normalizedBacklinks = localBacklinks.map((bl: any) => {
+        const normalized: Backlink = {
+          id: bl.id || `local-${Date.now()}-${Math.random()}`,
+          // Handle multiple possible field names
+          source_url: bl.source_url || bl.sourceUrl || window.location.href,
+          source_domain: bl.source_domain || bl.sourceDomain || 
+            (bl.source_url ? new URL(bl.source_url).hostname : window.location.hostname),
+          target_url: bl.target_url || bl.targetUrl || bl.href || '',
+          anchor_text: bl.anchor_text || bl.anchorText || bl.anchor_text || '',
+          context_type: bl.context_type || bl.contextType || 'generic',
+          is_broken: bl.is_broken || false,
+          http_status: bl.http_status || null,
+          first_seen_at: bl.first_seen_at || bl.timestamp || bl.created_at || new Date().toISOString(),
+          last_checked_at: bl.last_checked_at || bl.timestamp || new Date().toISOString(),
+          created_at: bl.created_at || bl.timestamp || new Date().toISOString(),
+          // Keep legacy fields for compatibility
+          timestamp: bl.timestamp,
+          isHidden: bl.isHidden,
+          parentTagName: bl.parentTagName,
+          href: bl.href,
+          anchorText: bl.anchorText,
+          contextType: bl.contextType
+        }
+        return normalized
+      })
       
-      console.table(transformedBacklinks.slice(0, 3)) // Show first 3 rows to verify shape
+      // Set local backlinks immediately for instant display
+      set({ backlinks: normalizedBacklinks })
       
-      // Set local backlinks immediately
-      set({ backlinks: transformedBacklinks })
-      
-      // If authenticated, also fetch from Supabase and merge
-      if (user) {
+      // If authenticated and Pro, fetch from Supabase and merge
+      if (user && get().isPro) {
         const { data, error } = await supabase
           .from('backlinks')
           .select('*')
@@ -434,22 +380,33 @@ export const useStore = create<AppState>((set, get) => ({
           .limit(100)
         
         if (!error && data && data.length > 0) {
-          // Merge Supabase data with local (Supabase takes precedence for duplicates)
-          const supabaseIds = new Set(data.map(d => d.source_url + d.target_url))
-          const uniqueLocalBacklinks = transformedBacklinks.filter(
-            (bl: any) => !supabaseIds.has(bl.source_url + bl.target_url)
+          // Create a Set for deduplication based on source_url + target_url
+          const existingKeys = new Set(
+            data.map(d => `${d.source_url}|${d.target_url}`)
           )
           
+          // Filter local backlinks to avoid duplicates
+          const uniqueLocalBacklinks = normalizedBacklinks.filter(
+            (bl: any) => !existingKeys.has(`${bl.source_url}|${bl.target_url}`)
+          )
+          
+          // Merge and sort by creation date
           const mergedBacklinks = [...data, ...uniqueLocalBacklinks]
             .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
-            .slice(0, 100)
+            .slice(0, 100) // Keep only the most recent 100
           
           set({ backlinks: mergedBacklinks })
         }
       }
+      
+      if (IS_DEV) {
+        console.log('Normalized backlinks count:', normalizedBacklinks.length)
+        console.log('Final backlinks in state:', get().backlinks.length)
+      }
+      
     } catch (error) {
       console.error('fetchBacklinks error:', error)
-      // On error, still show local backlinks
+      // On error, still try to show local backlinks
       const localResult = await chrome.storage.local.get('localBacklinks')
       const localBacklinks = localResult.localBacklinks || []
       set({ backlinks: localBacklinks })
@@ -457,31 +414,68 @@ export const useStore = create<AppState>((set, get) => ({
   },
   
   syncBacklinksToSupabase: async () => {
-    const { user, backlinks } = get()
-    if (!user || backlinks.length === 0) return
+    const { user, isPro } = get()
+    if (!user || !isPro) return
     
     try {
-      // Get local backlinks that haven't been synced
+      // Get local backlinks
       const localResult = await chrome.storage.local.get('localBacklinks')
       const localBacklinks = localResult.localBacklinks || []
       
+      if (localBacklinks.length === 0) return
+      
+      // Get tracked URLs for proper mapping
+      const { data: trackedUrls } = await supabase
+        .from('tracked_urls')
+        .select('id, url')
+        .eq('user_id', user.id)
+      
+      if (!trackedUrls || trackedUrls.length === 0) {
+        console.log('No tracked URLs found for user')
+        return
+      }
+      
+      // Create a map of URL to tracked_url_id
+      const urlToIdMap = new Map(
+        trackedUrls.map(tu => [tu.url, tu.id])
+      )
+      
       // Transform and prepare for Supabase
       const backlinksToSync = localBacklinks
-        .filter((bl: any) => !bl.id?.startsWith('local-'))
-        .map((bl: any) => ({
-          user_id: user.id,
-          tracked_url_id: user.id, // Simplified - should map to actual tracked URL
-          source_url: bl.source_url || bl.sourceUrl || bl.href,
-          source_domain: bl.source_domain || (bl.source_url ? new URL(bl.source_url).hostname : ''),
-          target_url: bl.target_url || bl.targetUrl || bl.href,
-          anchor_text: bl.anchor_text || bl.anchorText || null,
-          context_type: bl.context_type || bl.contextType || 'generic',
-          is_broken: false,
-          http_status: null,
-          first_seen_at: bl.timestamp || new Date().toISOString(),
-          last_checked_at: bl.timestamp || new Date().toISOString()
-        }))
+        .filter((bl: any) => {
+          // Only sync backlinks that match tracked URLs
+          const targetUrl = bl.target_url || bl.targetUrl || bl.href
+          return targetUrl && Array.from(urlToIdMap.keys()).some(trackedUrl => 
+            targetUrl.includes(trackedUrl.replace(/https?:\/\//, ''))
+          )
+        })
         .slice(0, 50) // Limit batch size
+        .map((bl: any) => {
+          const targetUrl = bl.target_url || bl.targetUrl || bl.href
+          // Find the matching tracked URL
+          let trackedUrlId = user.id // fallback
+          for (const [url, id] of urlToIdMap.entries()) {
+            if (targetUrl.includes(url.replace(/https?:\/\//, ''))) {
+              trackedUrlId = id
+              break
+            }
+          }
+          
+          return {
+            user_id: user.id,
+            tracked_url_id: trackedUrlId,
+            source_url: bl.source_url || bl.sourceUrl || window.location.href,
+            source_domain: bl.source_domain || 
+              (bl.source_url ? new URL(bl.source_url).hostname : window.location.hostname),
+            target_url: targetUrl,
+            anchor_text: bl.anchor_text || bl.anchorText || null,
+            context_type: bl.context_type || bl.contextType || 'generic',
+            is_broken: false,
+            http_status: null,
+            first_seen_at: bl.timestamp || new Date().toISOString(),
+            last_checked_at: new Date().toISOString()
+          }
+        })
       
       if (backlinksToSync.length > 0) {
         const { error } = await supabase
@@ -495,8 +489,12 @@ export const useStore = create<AppState>((set, get) => ({
           console.error('Sync to Supabase failed:', error)
         } else {
           // Clear synced backlinks from local storage
-          const unsyncedBacklinks = localBacklinks.slice(backlinksToSync.length)
-          await chrome.storage.local.set({ localBacklinks: unsyncedBacklinks })
+          const remainingBacklinks = localBacklinks.slice(backlinksToSync.length)
+          await chrome.storage.local.set({ localBacklinks: remainingBacklinks })
+          
+          if (IS_DEV) {
+            console.log(`Synced ${backlinksToSync.length} backlinks to Supabase`)
+          }
         }
       }
     } catch (error) {
@@ -514,7 +512,7 @@ export const useStore = create<AppState>((set, get) => ({
       set({ keywords: localKeywords })
       
       // Then fetch from Supabase if authenticated
-      if (user) {
+      if (user && get().isPro) {
         const { data, error } = await supabase
           .from('keywords')
           .select('*')
@@ -532,7 +530,7 @@ export const useStore = create<AppState>((set, get) => ({
           })
           
           // Add local keywords if not already present
-          localKeywords.forEach((kw: Keyword) => {
+          localKeywords.forEach((kw: any) => {
             if (!keywordMap.has(kw.keyword)) {
               keywordMap.set(kw.keyword, kw)
             }
@@ -547,20 +545,6 @@ export const useStore = create<AppState>((set, get) => ({
       }
     } catch (error) {
       console.error('fetchKeywords error:', error)
-      // On error, still show local keywords
-      const localResult = await chrome.storage.local.get('localKeywords')
-      const localKeywords = localResult.localKeywords || []
-      set({ keywords: localKeywords })
     }
   }
 }))
-
-// Add runtime listener for background notifications
-if (chrome?.runtime?.onMessage) {
-  chrome.runtime.onMessage.addListener((msg) => {
-    if (msg?.type === 'BACKLINKS_UPDATED') {
-      // re-read localBacklinks and update state
-      useStore.getState().fetchBacklinks()
-    }
-  })
-}
