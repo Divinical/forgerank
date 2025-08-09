@@ -8,6 +8,10 @@ interface DetectedLink {
   parentTagName: string
   isHidden: boolean
   timestamp: string
+  source_url?: string
+  source_domain?: string
+  target_url?: string
+  anchor_text?: string
 }
 
 interface CandidateLink {
@@ -229,8 +233,13 @@ class BacklinkScanner {
         anchorText: candidate.anchorText,
         contextType: this.detectContextType(candidate.parentTag),
         parentTagName: candidate.parentTag,
-        isHidden: false, // Simplified for debugging
-        timestamp: this.safeTimestamp()
+        isHidden: false,
+        timestamp: this.safeTimestamp(),
+        // Add fields for better compatibility
+        source_url: window.location.href,
+        source_domain: window.location.hostname,
+        target_url: candidate.href,
+        anchor_text: candidate.anchorText
       }
       
       this.foundLinks.push(detectedLink)
