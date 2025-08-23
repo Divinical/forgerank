@@ -3,9 +3,6 @@ import type { Keyword } from '../types/keyword'
 import { supabase } from '../lib/supabase'
 import { User } from '@supabase/supabase-js'
 
-// Remove hardcoded whitelist - use Supabase user table instead
-const IS_DEV = import.meta.env.DEV
-
 type Tab = 'dashboard' | 'tracked-links' | 'backlinks' | 'keywords' | 'settings' | 'upgrade'
 
 interface Backlink {
@@ -117,10 +114,7 @@ export const useStore = create<AppState>((set, get) => ({
       let result
       
       if (provider === 'email' && email && password) {
-        // Try sign in first
         result = await supabase.auth.signInWithPassword({ email, password })
-        
-        // If user doesn't exist, sign up
         if (result.error?.message?.includes('Invalid login credentials')) {
           result = await supabase.auth.signUp({ email, password })
         }
@@ -135,17 +129,13 @@ export const useStore = create<AppState>((set, get) => ({
       
       if (result?.error) throw result.error
       
-      // For OAuth providers, result.data contains { provider, url } not user data
-      // User data comes later via session callback, so just close modal
       if (provider === 'email' && result?.data && 'user' in result.data && result.data.user) {
         set({ user: result.data.user, isAuthenticated: true })
-        await get().loadUserData()
+        get().loadUserData()
       }
-      // For OAuth, the auth state change listener will handle setting user data
       
       set({ isLoginModalOpen: false })
     } catch (error) {
-      console.error('Sign in error:', error)
       throw error
     }
   },
@@ -167,11 +157,10 @@ export const useStore = create<AppState>((set, get) => ({
       const { data: { session } } = await supabase.auth.getSession()
       if (session?.user) {
         set({ user: session.user, isAuthenticated: true })
-        // Load user data in background
-        setTimeout(() => get().loadUserData(), 100)
+        get().loadUserData()
       }
     } catch (error) {
-      console.error('Auth check failed:', error)
+      // Silent fail for auth check
     }
   },
   
@@ -180,7 +169,6 @@ export const useStore = create<AppState>((set, get) => ({
     if (!user) return
     
     try {
-      // Check Pro status from database
       const { data: profile } = await supabase
         .from('users')
         .select('*')
@@ -188,41 +176,23 @@ export const useStore = create<AppState>((set, get) => ({
         .single()
       
       if (profile) {
-        // Check if user is pro OR has active trial
         const isPro = profile.is_pro || 
           (profile.trial_ends_at && new Date(profile.trial_ends_at) > new Date())
         
         set({ isPro })
-        
-        if (chrome?.storage?.local) {
-          await chrome.storage.local.set({ isPro })
-        }
-        
-        // Log for debugging
-        if (IS_DEV) {
-          console.log('User Pro Status:', {
-            email: user.email,
-            is_pro: profile.is_pro,
-            trial_ends_at: profile.trial_ends_at,
-            isPro
-          })
-        }
+        chrome.storage.local.set({ isPro })
       }
       
-      // Load all user data in parallel
       await Promise.all([
         get().fetchTrackedUrls(),
         get().fetchBacklinks(),
         get().fetchKeywords()
       ])
       
-      // Sync local backlinks to Supabase in background
-      setTimeout(() => {
-        get().syncBacklinksToSupabase()
-      }, 1000)
+      get().syncBacklinksToSupabase()
       
     } catch (error) {
-      console.error('Error loading user data:', error)
+      // Silent fail for user data loading
     }
   },
   
@@ -329,87 +299,55 @@ export const useStore = create<AppState>((set, get) => ({
   },
   
   fetchBacklinks: async () => {
-    const { user } = get()
+    const { user, isPro } = get()
     
     try {
-      // ALWAYS load from local storage first
       const localResult = await chrome.storage.local.get('localBacklinks')
       const localBacklinks = localResult.localBacklinks || []
       
-      if (IS_DEV) {
-        console.log('Raw local backlinks:', localBacklinks.slice(0, 2))
-      }
+      // Simple normalization - handle common field variations
+      const normalizedBacklinks = localBacklinks.map((bl: any) => ({
+        id: bl.id || `local-${Date.now()}-${Math.random()}`,
+        source_url: bl.source_url || bl.sourceUrl || '',
+        source_domain: bl.source_domain || bl.sourceDomain || '',
+        target_url: bl.target_url || bl.targetUrl || bl.href || '',
+        anchor_text: bl.anchor_text || bl.anchorText || '',
+        context_type: bl.context_type || bl.contextType || 'generic',
+        is_broken: bl.is_broken || false,
+        http_status: bl.http_status || null,
+        first_seen_at: bl.first_seen_at || bl.timestamp || bl.created_at || new Date().toISOString(),
+        last_checked_at: bl.last_checked_at || new Date().toISOString(),
+        created_at: bl.created_at || bl.timestamp || new Date().toISOString(),
+        timestamp: bl.timestamp,
+        isHidden: bl.isHidden,
+        parentTagName: bl.parentTagName,
+        href: bl.href,
+        anchorText: bl.anchorText,
+        contextType: bl.contextType
+      }))
       
-      // Normalize the data structure - handle both old and new field names
-      const normalizedBacklinks = localBacklinks.map((bl: any) => {
-        const normalized: Backlink = {
-          id: bl.id || `local-${Date.now()}-${Math.random()}`,
-          // Handle multiple possible field names
-          source_url: bl.source_url || bl.sourceUrl || window.location.href,
-          source_domain: bl.source_domain || bl.sourceDomain || 
-            (bl.source_url ? new URL(bl.source_url).hostname : window.location.hostname),
-          target_url: bl.target_url || bl.targetUrl || bl.href || '',
-          anchor_text: bl.anchor_text || bl.anchorText || bl.anchor_text || '',
-          context_type: bl.context_type || bl.contextType || 'generic',
-          is_broken: bl.is_broken || false,
-          http_status: bl.http_status || null,
-          first_seen_at: bl.first_seen_at || bl.timestamp || bl.created_at || new Date().toISOString(),
-          last_checked_at: bl.last_checked_at || bl.timestamp || new Date().toISOString(),
-          created_at: bl.created_at || bl.timestamp || new Date().toISOString(),
-          // Keep legacy fields for compatibility
-          timestamp: bl.timestamp,
-          isHidden: bl.isHidden,
-          parentTagName: bl.parentTagName,
-          href: bl.href,
-          anchorText: bl.anchorText,
-          contextType: bl.contextType
-        }
-        return normalized
-      })
-      
-      // Set local backlinks immediately for instant display
+      // Set local backlinks immediately
       set({ backlinks: normalizedBacklinks })
       
-      // If authenticated and Pro, fetch from Supabase and merge
-      if (user && get().isPro) {
-        const { data, error } = await supabase
+      // If Pro user, merge with Supabase data
+      if (user && isPro) {
+        const { data } = await supabase
           .from('backlinks')
           .select('*')
           .eq('user_id', user.id)
           .order('created_at', { ascending: false })
-          .limit(100)
+          .limit(50)
         
-        if (!error && data && data.length > 0) {
-          // Create a Set for deduplication based on source_url + target_url
-          const existingKeys = new Set(
-            data.map(d => `${d.source_url}|${d.target_url}`)
-          )
-          
-          // Filter local backlinks to avoid duplicates
-          const uniqueLocalBacklinks = normalizedBacklinks.filter(
-            (bl: any) => !existingKeys.has(`${bl.source_url}|${bl.target_url}`)
-          )
-          
-          // Merge and sort by creation date
-          const mergedBacklinks = [...data, ...uniqueLocalBacklinks]
-            .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
-            .slice(0, 100) // Keep only the most recent 100
-          
-          set({ backlinks: mergedBacklinks })
+        if (data) {
+          const merged = [...data, ...normalizedBacklinks]
+            .slice(0, 100)
+          set({ backlinks: merged })
         }
       }
       
-      if (IS_DEV) {
-        console.log('Normalized backlinks count:', normalizedBacklinks.length)
-        console.log('Final backlinks in state:', get().backlinks.length)
-      }
-      
     } catch (error) {
-      console.error('fetchBacklinks error:', error)
-      // On error, still try to show local backlinks
       const localResult = await chrome.storage.local.get('localBacklinks')
-      const localBacklinks = localResult.localBacklinks || []
-      set({ backlinks: localBacklinks })
+      set({ backlinks: localResult.localBacklinks || [] })
     }
   },
   
@@ -418,133 +356,74 @@ export const useStore = create<AppState>((set, get) => ({
     if (!user || !isPro) return
     
     try {
-      // Get local backlinks
       const localResult = await chrome.storage.local.get('localBacklinks')
       const localBacklinks = localResult.localBacklinks || []
       
       if (localBacklinks.length === 0) return
       
-      // Get tracked URLs for proper mapping
       const { data: trackedUrls } = await supabase
         .from('tracked_urls')
         .select('id, url')
         .eq('user_id', user.id)
       
-      if (!trackedUrls || trackedUrls.length === 0) {
-        console.log('No tracked URLs found for user')
-        return
-      }
+      if (!trackedUrls?.length) return
       
-      // Create a map of URL to tracked_url_id
-      const urlToIdMap = new Map(
-        trackedUrls.map(tu => [tu.url, tu.id])
-      )
-      
-      // Transform and prepare for Supabase
       const backlinksToSync = localBacklinks
-        .filter((bl: any) => {
-          // Only sync backlinks that match tracked URLs
-          const targetUrl = bl.target_url || bl.targetUrl || bl.href
-          return targetUrl && Array.from(urlToIdMap.keys()).some(trackedUrl => 
-            targetUrl.includes(trackedUrl.replace(/https?:\/\//, ''))
-          )
-        })
-        .slice(0, 50) // Limit batch size
-        .map((bl: any) => {
-          const targetUrl = bl.target_url || bl.targetUrl || bl.href
-          // Find the matching tracked URL
-          let trackedUrlId = user.id // fallback
-          for (const [url, id] of urlToIdMap.entries()) {
-            if (targetUrl.includes(url.replace(/https?:\/\//, ''))) {
-              trackedUrlId = id
-              break
-            }
-          }
-          
-          return {
-            user_id: user.id,
-            tracked_url_id: trackedUrlId,
-            source_url: bl.source_url || bl.sourceUrl || window.location.href,
-            source_domain: bl.source_domain || 
-              (bl.source_url ? new URL(bl.source_url).hostname : window.location.hostname),
-            target_url: targetUrl,
-            anchor_text: bl.anchor_text || bl.anchorText || null,
-            context_type: bl.context_type || bl.contextType || 'generic',
-            is_broken: false,
-            http_status: null,
-            first_seen_at: bl.timestamp || new Date().toISOString(),
-            last_checked_at: new Date().toISOString()
-          }
-        })
+        .slice(0, 20) // Smaller batch size
+        .map((bl: any) => ({
+          user_id: user.id,
+          tracked_url_id: trackedUrls[0].id, // Use first tracked URL as fallback
+          source_url: bl.source_url || bl.sourceUrl || '',
+          source_domain: bl.source_domain || bl.sourceDomain || '',
+          target_url: bl.target_url || bl.targetUrl || bl.href || '',
+          anchor_text: bl.anchor_text || bl.anchorText || null,
+          context_type: bl.context_type || bl.contextType || 'generic',
+          is_broken: false,
+          http_status: null,
+          first_seen_at: bl.timestamp || new Date().toISOString(),
+          last_checked_at: new Date().toISOString()
+        }))
       
       if (backlinksToSync.length > 0) {
-        const { error } = await supabase
+        await supabase
           .from('backlinks')
           .upsert(backlinksToSync, { 
             onConflict: 'source_url,target_url,user_id',
             ignoreDuplicates: true 
           })
         
-        if (error) {
-          console.error('Sync to Supabase failed:', error)
-        } else {
-          // Clear synced backlinks from local storage
-          const remainingBacklinks = localBacklinks.slice(backlinksToSync.length)
-          await chrome.storage.local.set({ localBacklinks: remainingBacklinks })
-          
-          if (IS_DEV) {
-            console.log(`Synced ${backlinksToSync.length} backlinks to Supabase`)
-          }
-        }
+        const remainingBacklinks = localBacklinks.slice(backlinksToSync.length)
+        await chrome.storage.local.set({ localBacklinks: remainingBacklinks })
       }
     } catch (error) {
-      console.error('syncBacklinksToSupabase error:', error)
+      // Silent fail for sync
     }
   },
   
   fetchKeywords: async () => {
-    const { user } = get()
+    const { user, isPro } = get()
     
     try {
-      // Always load from local first
       const localResult = await chrome.storage.local.get('localKeywords')
       const localKeywords = localResult.localKeywords || []
       set({ keywords: localKeywords })
       
-      // Then fetch from Supabase if authenticated
-      if (user && get().isPro) {
-        const { data, error } = await supabase
+      if (user && isPro) {
+        const { data } = await supabase
           .from('keywords')
           .select('*')
           .eq('user_id', user.id)
           .order('frequency', { ascending: false })
           .limit(50)
         
-        if (!error && data && data.length > 0) {
-          // Merge with local keywords
-          const keywordMap = new Map()
-          
-          // Add Supabase keywords first (higher priority)
-          data.forEach(kw => {
-            keywordMap.set(kw.keyword, kw)
-          })
-          
-          // Add local keywords if not already present
-          localKeywords.forEach((kw: any) => {
-            if (!keywordMap.has(kw.keyword)) {
-              keywordMap.set(kw.keyword, kw)
-            }
-          })
-          
-          const mergedKeywords = Array.from(keywordMap.values())
-            .sort((a, b) => b.frequency - a.frequency)
+        if (data) {
+          const merged = [...data, ...localKeywords]
             .slice(0, 50)
-          
-          set({ keywords: mergedKeywords })
+          set({ keywords: merged })
         }
       }
     } catch (error) {
-      console.error('fetchKeywords error:', error)
+      // Silent fail for keywords
     }
   }
 }))

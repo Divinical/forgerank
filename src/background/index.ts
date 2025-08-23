@@ -34,9 +34,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 })
 
 async function handleBacklinksFound(data: any, tabId: number) {
-  console.log('BG: incoming links count =', data.links?.length || 0)
-  
-  // Just store the raw data - no processing
   const { localBacklinks = [] } = await chrome.storage.local.get('localBacklinks')
   
   // Minimal dedupe using Set keyed by source_url|target_url
@@ -58,9 +55,6 @@ async function handleBacklinksFound(data: any, tabId: number) {
     localBacklinks: newBacklinks,
     lastBacklinkUpdate: Date.now() 
   })
-  
-  console.log('BG: new localBacklinks length =', newBacklinks.length)
-  console.log('BG: saved after dedupe length =', uniqueIncomingLinks.length)
   
   // Update badge
   const count = data.links.length

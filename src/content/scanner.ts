@@ -28,70 +28,45 @@ class BacklinkScanner {
   public trackedUrls: string[] = []
   private foundLinks: DetectedLink[] = []
   private candidateLinks: CandidateLink[] = []
+  private mutationObserver: MutationObserver | null = null
+  private rescanTimeout: number | null = null
   
   constructor() {
-    console.log('🔍 ForgeRank Scanner: Initializing on', window.location.href)
     this.init()
   }
   
   async init() {
     try {
-      console.log('🔍 ForgeRank Scanner: Loading tracked URLs from storage...')
-      
-      // Check if extension context is still valid
       if (!chrome.storage || !chrome.storage.local) {
-        console.log('🔍 ForgeRank Scanner: Extension context invalidated - skipping initialization')
         return
       }
       
       const result = await chrome.storage.local.get('trackedUrls')
       this.trackedUrls = result.trackedUrls || []
       
-      console.log(`🔍 ForgeRank Scanner: Found ${this.trackedUrls.length} tracked URLs:`, this.trackedUrls)
-      
       if (this.trackedUrls.length === 0) {
-        console.log('🔍 ForgeRank Scanner: No tracked URLs - skipping scan')
         return
       }
       
-      this.testDOMAccess()
       this.performScan()
       this.observePageChanges()
       
     } catch (error) {
-      console.log('🔍 ForgeRank Scanner: Init failed (extension context may be invalidated):', error)
+      // Silent fail - extension context may be invalidated
     }
   }
   
-  private testDOMAccess() {
-    try {
-      const anchors = document.querySelectorAll('a')
-      console.log(`🔍 ForgeRank Scanner: DOM Access OK - Found ${anchors.length} anchors`)
-      
-      // Sample first few links
-      for (let i = 0; i < Math.min(3, anchors.length); i++) {
-        const anchor = anchors[i] as HTMLAnchorElement
-        console.log(`🔍 Sample link ${i + 1}: "${anchor.href}" (${anchor.textContent?.trim() || 'no text'})`)
-      }
-    } catch (error) {
-      console.error('🔍 ForgeRank Scanner: DOM Access Failed:', error)
-    }
-  }
   
   public isCurrentPageTracked(): boolean {
     const result = this.isTrackedUrl(window.location.href, 'current-page')
-    console.log(`🔍 Current page ${window.location.href} tracked: ${result.isMatch}`)
     return result.isMatch
   }
   
   performScan() {
-    // Check extension context before scanning
     if (!chrome || !chrome.storage || !chrome.runtime) {
-      console.log('🔍 ForgeRank Scanner: Extension context invalidated - skipping scan')
       return
     }
     
-    console.log('🔍 ForgeRank Scanner: === STARTING SCAN ===')
     const startTime = performance.now()
     
     this.foundLinks = []
@@ -102,18 +77,15 @@ class BacklinkScanner {
       this.scanTextContent()
       this.scanButtonsAndData()
     } catch (error) {
-      console.log('🔍 ForgeRank Scanner: Scan error (may be context invalidation):', error)
       return
     }
     
     const duration = Math.round(performance.now() - startTime)
-    this.generateFinalReport(duration)
     this.sendResults(duration)
   }
   
   private scanAllAnchors() {
     const anchors = document.querySelectorAll('a[href]')
-    console.log(`🔍 ForgeRank Scanner: Scanning ${anchors.length} anchor elements`)
     
     anchors.forEach((anchor, index) => {
       const element = anchor as HTMLAnchorElement
@@ -130,7 +102,6 @@ class BacklinkScanner {
   }
   
   private scanTextContent() {
-    console.log('🔍 ForgeRank Scanner: Scanning text content for raw URLs')
     
     const walker = document.createTreeWalker(
       document.body,
@@ -162,7 +133,6 @@ class BacklinkScanner {
   
   private scanButtonsAndData() {
     const elements = document.querySelectorAll('button[data-href], [data-url], [onclick*="http"]')
-    console.log(`🔍 ForgeRank Scanner: Scanning ${elements.length} button/data elements`)
     
     elements.forEach((element, index) => {
       const el = element as HTMLElement
@@ -226,7 +196,6 @@ class BacklinkScanner {
     this.candidateLinks.push(candidateLink)
     
     if (matchResult.isMatch) {
-      console.log(`✅ MATCH FOUND: ${candidate.href} (${matchResult.matchReason})`)
       
       const detectedLink: DetectedLink = {
         href: candidate.href,
@@ -313,7 +282,7 @@ class BacklinkScanner {
         }
         
       } catch (e) {
-        console.warn(`🔍 Error parsing URLs: candidate=${normalizedCandidate}, tracked=${normalizedTracked}`, e)
+        // URL parsing error - skip
       }
     }
     
@@ -343,7 +312,6 @@ class BacklinkScanner {
   async reloadTrackedUrls() {
     try {
       if (!chrome || !chrome.storage || !chrome.storage.local) {
-        console.log('🔍 ForgeRank Scanner: Extension context invalid - cannot reload URLs')
         return
       }
       
@@ -351,7 +319,6 @@ class BacklinkScanner {
       const newTrackedUrls = result.trackedUrls || []
       
       if (JSON.stringify(this.trackedUrls) !== JSON.stringify(newTrackedUrls)) {
-        console.log('🔍 ForgeRank Scanner: Tracked URLs changed, updating:', newTrackedUrls)
         this.trackedUrls = newTrackedUrls
         
         if (newTrackedUrls.length > 0) {
@@ -359,39 +326,10 @@ class BacklinkScanner {
         }
       }
     } catch (error) {
-      console.log('🔍 ForgeRank Scanner: Failed to reload tracked URLs:', error)
+      // Silent fail
     }
   }
   
-  private generateFinalReport(duration: number) {
-    console.log('🔍 ForgeRank Scanner: === SCAN COMPLETE ===')
-    console.log(`⏱️ Duration: ${duration}ms`)
-    console.log(`📊 Total candidates: ${this.candidateLinks.length}`)
-    console.log(`✅ Matches found: ${this.foundLinks.length}`)
-    
-    if (this.candidateLinks.length > 0) {
-      console.log('📋 Detailed Results:')
-      
-      this.candidateLinks.forEach((candidate, index) => {
-        if (candidate.matchResult === 'MATCHED') {
-          console.log(`  ✅ [${index}] MATCH: ${candidate.href} (${candidate.matchReason})`)
-        }
-      })
-      
-      // Show some skipped examples
-      const skipped = this.candidateLinks.filter(c => c.matchResult === 'SKIPPED')
-      if (skipped.length > 0) {
-        console.log(`❌ Skipped ${skipped.length} candidates. First 5:`)
-        skipped.slice(0, 5).forEach((candidate, index) => {
-          console.log(`  ❌ [${index}] SKIP: ${candidate.href} (${candidate.skipReason})`)
-        })
-      }
-    } else {
-      console.log('⚠️ No candidates found - possible DOM access issue')
-    }
-    
-    console.log('🔍 ForgeRank Scanner: === END REPORT ===')
-  }
   
   private sendResults(duration: number) {
     const isTrackedPage = this.isCurrentPageTracked()
@@ -407,7 +345,6 @@ class BacklinkScanner {
     
     // Send backlinks if found
     if (this.foundLinks.length > 0) {
-      console.log('📤 Sending backlinks to background:', this.foundLinks)
       this.safeSendMessage({
         type: 'BACKLINKS_FOUND',
         data: {
@@ -424,33 +361,48 @@ class BacklinkScanner {
     try {
       if (chrome.runtime && chrome.runtime.sendMessage) {
         chrome.runtime.sendMessage(message, () => {
-          // Handle potential runtime errors
           if (chrome.runtime.lastError) {
-            console.log('🔍 ForgeRank Scanner: Message send failed (extension context may be invalidated):', chrome.runtime.lastError.message)
+            // Silent fail - extension context may be invalidated
           }
         })
       }
     } catch (error) {
-      console.log('🔍 ForgeRank Scanner: Failed to send message (extension context invalidated):', error)
+      // Silent fail - extension context invalidated
     }
   }
   
   private observePageChanges() {
-    const observer = new MutationObserver(() => {
-      clearTimeout(this.rescanTimeout)
+    // Disconnect existing observer if any
+    if (this.mutationObserver) {
+      this.mutationObserver.disconnect()
+    }
+    
+    this.mutationObserver = new MutationObserver(() => {
+      if (this.rescanTimeout) {
+        clearTimeout(this.rescanTimeout)
+      }
       this.rescanTimeout = window.setTimeout(() => {
-        console.log('🔍 ForgeRank Scanner: DOM changed - rescanning...')
         this.performScan()
       }, 1000)
     })
     
-    observer.observe(document.body, {
+    this.mutationObserver.observe(document.body, {
       childList: true,
       subtree: true
     })
   }
   
-  private rescanTimeout?: number
+  // Cleanup method to prevent memory leaks
+  public cleanup() {
+    if (this.mutationObserver) {
+      this.mutationObserver.disconnect()
+      this.mutationObserver = null
+    }
+    if (this.rescanTimeout) {
+      clearTimeout(this.rescanTimeout)
+      this.rescanTimeout = null
+    }
+  }
 }
 
 // Initialize scanner only if extension context is valid
@@ -461,7 +413,6 @@ if (chrome && chrome.storage && chrome.runtime) {
   // Listen for messages from background script
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (message.type === 'RELOAD_SCANNER_STATE') {
-      console.log('🔍 ForgeRank Scanner: Reloading state with tracked URLs:', message.trackedUrls)
       scanner.trackedUrls = message.trackedUrls || []
       scanner.performScan()
       sendResponse({ success: true })
@@ -476,6 +427,12 @@ if (chrome && chrome.storage && chrome.runtime) {
   } else {
     scanner.performScan()
   }
+  
+  // Cleanup on page unload to prevent memory leaks
+  window.addEventListener('beforeunload', () => {
+    scanner.cleanup()
+  })
+  
 } else {
-  console.log('🔍 ForgeRank Scanner: Extension context not available - skipping initialization')
+  // Extension context not available - skip initialization
 }

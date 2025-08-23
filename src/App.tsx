@@ -16,30 +16,23 @@ function App() {
   
   // Check authentication on mount and listen for auth changes
   useEffect(() => {
-    // Initial auth check (fast, non-blocking)
     checkAuth()
     
-    // Listen for auth state changes
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
       async (event, session) => {
         if (event === 'SIGNED_IN' && session?.user) {
           setUser(session.user)
           setIsAuthenticated(true)
-          // Load user data after a small delay to not block UI
-          setTimeout(() => {
-            loadUserData()
-          }, 100)
+          loadUserData()
         } else if (event === 'SIGNED_OUT') {
           setUser(null)
           setIsAuthenticated(false)
-          // Clear user data but keep tracked URLs from local storage
           useStore.setState({ 
             backlinks: [], 
             keywords: [],
             isPro: false
           })
         } else if (event === 'TOKEN_REFRESHED' && session?.user) {
-          // Silent token refresh
           setUser(session.user)
           setIsAuthenticated(true)
         }
@@ -54,16 +47,12 @@ function App() {
     const messageListener = (message: any) => {
       if (message.type === 'BACKLINKS_UPDATED') {
         fetchBacklinks()
-        // Also refresh keywords since they're extracted from the same source
         useStore.getState().fetchKeywords()
       }
     }
     
     chrome.runtime.onMessage.addListener(messageListener)
-    
-    return () => {
-      chrome.runtime.onMessage.removeListener(messageListener)
-    }
+    return () => chrome.runtime.onMessage.removeListener(messageListener)
   }, [fetchBacklinks])
   
   // Apply dark mode class to document

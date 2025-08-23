@@ -12,13 +12,11 @@ if (!supabaseUrl || !supabaseAnonKey) {
 const dualStorage = {
   getItem: async (key: string): Promise<string | null> => {
     try {
-      // Try localStorage first (faster, synchronous-like)
       if (typeof window !== 'undefined' && window.localStorage) {
         const localItem = window.localStorage.getItem(key)
         if (localItem) return localItem
       }
       
-      // Fallback to chrome.storage if available
       if (chrome?.storage?.local) {
         return new Promise((resolve) => {
           chrome.storage.local.get([key], (result) => {
@@ -35,16 +33,18 @@ const dualStorage = {
   
   setItem: async (key: string, value: string): Promise<void> => {
     try {
-      // Store in localStorage for fast access
       if (typeof window !== 'undefined' && window.localStorage) {
         window.localStorage.setItem(key, value)
       }
       
-      // Also store in chrome.storage for persistence
       if (chrome?.storage?.local) {
-        await new Promise<void>((resolve) => {
+        await new Promise<void>((resolve, reject) => {
           chrome.storage.local.set({ [key]: value }, () => {
-            resolve()
+            if (chrome.runtime.lastError) {
+              reject(chrome.runtime.lastError)
+            } else {
+              resolve()
+            }
           })
         })
       }
@@ -55,16 +55,18 @@ const dualStorage = {
   
   removeItem: async (key: string): Promise<void> => {
     try {
-      // Remove from localStorage
       if (typeof window !== 'undefined' && window.localStorage) {
         window.localStorage.removeItem(key)
       }
       
-      // Remove from chrome.storage
       if (chrome?.storage?.local) {
-        await new Promise<void>((resolve) => {
+        await new Promise<void>((resolve, reject) => {
           chrome.storage.local.remove([key], () => {
-            resolve()
+            if (chrome.runtime.lastError) {
+              reject(chrome.runtime.lastError)
+            } else {
+              resolve()
+            }
           })
         })
       }
