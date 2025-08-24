@@ -60,14 +60,51 @@ export function TrackedLinks() {
     }
   }
   
-  // Debug info for development
-  const debugInfo = process.env.NODE_ENV === 'development' && (
-    <div className="mb-4 p-3 bg-blue-500/10 border border-blue-500/30 rounded-lg text-xs text-blue-400">
-      <p>Debug Info:</p>
+  // Debug info for development - always show for now to debug pro status
+  const debugInfo = (
+    <div className="mb-4 p-3 bg-blue-500/10 border border-blue-500/30 rounded-lg text-xs text-blue-400 space-y-2">
+      <p className="font-semibold">Debug Info:</p>
       <p>Authenticated: {isAuthenticated ? 'Yes' : 'No'}</p>
       <p>User: {user?.email || 'None'}</p>
+      <p>User ID: {user?.id || 'None'}</p>
       <p>Pro Status: {isPro ? 'Yes' : 'No'}</p>
       <p>Tracked URLs: {trackedUrls.length}/{maxUrls}</p>
+      
+      <div className="flex gap-2 pt-2 border-t border-blue-500/30">
+        <button
+          onClick={async () => {
+            console.log('🔧 Manual cache clear requested')
+            await chrome.storage.local.remove(['isPro'])
+            console.log('🔧 Cleared isPro from Chrome storage')
+            useStore.setState({ isPro: false })
+            console.log('🔧 Reset isPro to false in React state')
+          }}
+          className="px-2 py-1 bg-red-500/20 border border-red-500/50 rounded text-red-400 hover:bg-red-500/30 transition-colors"
+        >
+          Clear Cache
+        </button>
+        
+        <button
+          onClick={() => {
+            console.log('🔧 Manual loadUserData reload requested')
+            useStore.getState().loadUserData()
+          }}
+          className="px-2 py-1 bg-green-500/20 border border-green-500/50 rounded text-green-400 hover:bg-green-500/30 transition-colors"
+        >
+          Reload User Data
+        </button>
+        
+        <button
+          onClick={async () => {
+            console.log('🔧 Chrome storage contents:')
+            const storage = await chrome.storage.local.get()
+            console.log(storage)
+          }}
+          className="px-2 py-1 bg-yellow-500/20 border border-yellow-500/50 rounded text-yellow-400 hover:bg-yellow-500/30 transition-colors"
+        >
+          Log Storage
+        </button>
+      </div>
     </div>
   )
   

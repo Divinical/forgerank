@@ -1,15 +1,18 @@
 import { motion, AnimatePresence } from 'framer-motion'
-import { X, Github, Mail, AlertCircle } from 'lucide-react'
+import { X, Github, Mail, AlertCircle, Eye, EyeOff } from 'lucide-react'
 import { useStore } from '../store/useStore'
 import { useState } from 'react'
 
 export function LoginModal() {
-  const { isLoginModalOpen, setLoginModalOpen, signIn } = useStore()
+  const { isLoginModalOpen, setLoginModalOpen, signIn, resetPassword } = useStore()
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [isSignUp, setIsSignUp] = useState(false)
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
+  const [showPassword, setShowPassword] = useState(false)
+  const [showForgotPassword, setShowForgotPassword] = useState(false)
+  const [resetEmailSent, setResetEmailSent] = useState(false)
   
   const handleEmailAuth = async () => {
     setError('')
@@ -47,6 +50,25 @@ export function LoginModal() {
       setLoading(false)
     }
   }
+
+  const handleForgotPassword = async () => {
+    setError('')
+    setLoading(true)
+    
+    try {
+      if (!email) {
+        throw new Error('Please enter your email address first')
+      }
+      
+      await resetPassword(email)
+      setResetEmailSent(true)
+      setShowForgotPassword(false)
+    } catch (err: any) {
+      setError(err.message || 'Failed to send reset email')
+    } finally {
+      setLoading(false)
+    }
+  }
   
   const handleClose = () => {
     setLoginModalOpen(false)
@@ -54,6 +76,9 @@ export function LoginModal() {
     setEmail('')
     setPassword('')
     setIsSignUp(false)
+    setShowPassword(false)
+    setShowForgotPassword(false)
+    setResetEmailSent(false)
   }
   
   return (
@@ -91,9 +116,21 @@ export function LoginModal() {
               </div>
               
               {error && (
-                <div className="mb-4 p-3 bg-red-500/10 border border-red-500/30 rounded-lg flex items-center gap-2">
-                  <AlertCircle className="w-4 h-4 text-red-400 flex-shrink-0" />
-                  <p className="text-sm text-red-400">{error}</p>
+                <div className="mb-4 p-3 bg-red-500/10 border border-red-500/30 rounded-lg flex items-start gap-2">
+                  <AlertCircle className="w-4 h-4 text-red-400 flex-shrink-0 mt-0.5" />
+                  <div className="flex-1">
+                    <p className="text-sm text-red-400">{error}</p>
+                    {error.includes('Invalid email or password') && (
+                      <p className="text-xs text-red-300 mt-1">
+                        Double-check your credentials or use "Forgot your password?" below.
+                      </p>
+                    )}
+                    {error.includes('No account found') && (
+                      <p className="text-xs text-red-300 mt-1">
+                        Contact support to create your Pro account.
+                      </p>
+                    )}
+                  </div>
                 </div>
               )}
               
@@ -160,15 +197,29 @@ export function LoginModal() {
                     className="input-field"
                     disabled={loading}
                   />
-                  <input
-                    type="password"
-                    value={password}
-                    onChange={(e) => setPassword(e.target.value)}
-                    placeholder="Password (min 6 characters)"
-                    className="input-field"
-                    disabled={loading}
-                    onKeyDown={(e) => e.key === 'Enter' && !loading && handleEmailAuth()}
-                  />
+                  <div className="relative">
+                    <input
+                      type={showPassword ? "text" : "password"}
+                      value={password}
+                      onChange={(e) => setPassword(e.target.value)}
+                      placeholder="Password (min 6 characters)"
+                      className={`input-field pr-12 ${password.length > 0 && password.length < 6 ? 'border-orange-500 focus:border-orange-500' : ''}`}
+                      disabled={loading}
+                      onKeyDown={(e) => e.key === 'Enter' && !loading && handleEmailAuth()}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowPassword(!showPassword)}
+                      className="absolute right-3 top-1/2 transform -translate-y-1/2 text-zinc-400 hover:text-zinc-200 transition-colors"
+                      disabled={loading}
+                    >
+                      {showPassword ? (
+                        <EyeOff className="w-5 h-5" />
+                      ) : (
+                        <Eye className="w-5 h-5" />
+                      )}
+                    </button>
+                  </div>
                   
                   <motion.button
                     whileHover={{ scale: 1.02 }}
@@ -182,11 +233,64 @@ export function LoginModal() {
                     <Mail className="w-5 h-5" />
                     {loading ? 'Processing...' : isSignUp ? 'Sign Up with Email' : 'Sign In with Email'}
                   </motion.button>
+
+                  {/* Forgot Password Link */}
+                  {!isSignUp && !resetEmailSent && (
+                    <div className="text-center">
+                      <button
+                        onClick={() => setShowForgotPassword(true)}
+                        className="text-sm text-zinc-400 hover:text-zinc-200 transition-colors"
+                        disabled={loading}
+                      >
+                        Forgot your password?
+                      </button>
+                    </div>
+                  )}
+
+                  {/* Password Reset Success Message */}
+                  {resetEmailSent && (
+                    <div className="p-3 bg-green-500/10 border border-green-500/30 rounded-lg">
+                      <p className="text-sm text-green-400 text-center">
+                        Password reset email sent! Check your email for reset instructions.
+                      </p>
+                    </div>
+                  )}
+
+                  {/* Forgot Password Form */}
+                  {showForgotPassword && (
+                    <div className="p-4 bg-forge-lighter rounded-lg border border-zinc-600">
+                      <h3 className="text-lg font-medium text-white mb-3">Reset Password</h3>
+                      <p className="text-sm text-zinc-400 mb-3">
+                        Enter your email address and we'll send you a reset link.
+                      </p>
+                      <div className="flex gap-2">
+                        <motion.button
+                          whileHover={{ scale: 1.02 }}
+                          whileTap={{ scale: 0.98 }}
+                          onClick={handleForgotPassword}
+                          disabled={loading || !email}
+                          className="flex-1 bg-forge-orange hover:bg-orange-600 text-white px-4 py-2 rounded-lg
+                            font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                        >
+                          {loading ? 'Sending...' : 'Send Reset Email'}
+                        </motion.button>
+                        <button
+                          onClick={() => setShowForgotPassword(false)}
+                          className="px-4 py-2 text-zinc-400 hover:text-zinc-200 transition-colors"
+                          disabled={loading}
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    </div>
+                  )}
                   
                   <button
                     onClick={() => {
                       setIsSignUp(!isSignUp)
                       setError('')
+                      setShowForgotPassword(false)
+                      setResetEmailSent(false)
                     }}
                     className="text-sm text-zinc-400 hover:text-zinc-200 transition-colors"
                     disabled={loading}

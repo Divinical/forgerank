@@ -34,7 +34,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 })
 
 async function handleBacklinksFound(data: any, tabId: number) {
-  const { localBacklinks = [] } = await chrome.storage.local.get('localBacklinks')
+  const { localBacklinks = [], localKeywordSources = {} } = await chrome.storage.local.get(['localBacklinks', 'localKeywordSources'])
   
   // Minimal dedupe using Set keyed by source_url|target_url
   const existingKeys = new Set(
@@ -55,6 +55,43 @@ async function handleBacklinksFound(data: any, tabId: number) {
     localBacklinks: newBacklinks,
     lastBacklinkUpdate: Date.now() 
   })
+
+  // Collect page content for keyword extraction if we have new backlinks
+  if (uniqueIncomingLinks.length > 0) {
+    try {
+      // Get current tab info
+      const tab = await chrome.tabs.get(tabId)
+      const currentUrl = tab.url
+      
+      if (!currentUrl) return // Skip if no URL available
+      
+      // Only collect content if we don't already have it and it's not too old
+      const existingContent = localKeywordSources[currentUrl]
+      const isContentStale = !existingContent || (Date.now() - existingContent.timestamp > 24 * 60 * 60 * 1000) // 24 hours
+      
+      if (isContentStale) {
+        // Request page content from content script
+        const response = await chrome.tabs.sendMessage(tabId, { type: 'GET_PAGE_CONTENT' })
+        if (response?.content) {
+          localKeywordSources[currentUrl] = {
+            content: response.content,
+            timestamp: Date.now(),
+            title: response.title || tab.title || ''
+          }
+          await chrome.storage.local.set({ localKeywordSources })
+          console.log(`BG: Stored page content for ${currentUrl} (${response.content.length} chars)`)
+          
+          // Notify UI that new keyword sources are available
+          chrome.runtime.sendMessage({ type: 'KEYWORD_SOURCES_UPDATED' }).catch(() => {
+            // UI might not be open
+          })
+        }
+      }
+    } catch (error: any) {
+      console.log('BG: Failed to collect page content:', error?.message || error)
+      // Don't block backlink processing if content collection fails
+    }
+  }
   
   // Update badge
   const count = data.links.length

@@ -33,6 +33,138 @@ class BacklinkScanner {
   
   constructor() {
     this.init()
+    this.setupMessageListener()
+  }
+
+  private setupMessageListener() {
+    // Listen for requests from background script
+    chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+      if (message.type === 'GET_PAGE_CONTENT') {
+        const content = this.extractPageContent()
+        sendResponse({
+          content: content,
+          title: document.title,
+          url: window.location.href
+        })
+        return true // Keep message channel open for async response
+      }
+    })
+  }
+
+  private extractPageContent(): string {
+    try {
+      // Clone document to avoid modifying the original
+      const clonedDoc = document.cloneNode(true) as Document
+      
+      // Remove unwanted elements that contain UI/noise
+      const unwantedSelectors = [
+        'script', 'style', 'noscript', 'iframe', 'object', 'embed',
+        'nav', 'header', 'footer', 'aside', 'menu', 'menuitem',
+        '.nav', '.navigation', '.menu', '.header', '.footer', '.sidebar',
+        '.ad', '.ads', '.advertisement', '.banner', '.popup', '.modal',
+        '.cookie', '.consent', '.privacy', '.gdpr', '.subscribe',
+        '.newsletter', '.social', '.share', '.follow', '.comment', '.comments',
+        '.breadcrumb', '.breadcrumbs', '.pagination', '.pager',
+        '[aria-label*="navigation"]', '[aria-label*="menu"]', '[aria-label*="banner"]',
+        '[role="banner"]', '[role="navigation"]', '[role="complementary"]',
+        '[role="contentinfo"]', '[class*="skip"]', '[class*="screen-reader"]'
+      ]
+      
+      unwantedSelectors.forEach(selector => {
+        const elements = clonedDoc.querySelectorAll(selector)
+        elements.forEach(el => el.remove())
+      })
+      
+      // Priority content selectors - most specific to least specific
+      const contentSelectors = [
+        'main[role="main"]',
+        'div[role="main"]',
+        'main',
+        'article',
+        '.post-content', '.entry-content', '.article-content', '.content-area',
+        '.post', '.article', '.entry', '.blog-post',
+        '#content', '#main-content', '#primary-content',
+        '.content', '.main-content', '.primary-content',
+        '[itemprop="articleBody"]', '[itemprop="text"]'
+      ]
+      
+      let bestContent = ''
+      let bestScore = 0
+      
+      // Try each selector and score the content quality
+      for (const selector of contentSelectors) {
+        const element = clonedDoc.querySelector(selector)
+        if (!element) continue
+        
+        const text = element.textContent || ''
+        const score = this.scoreContentQuality(text, element as Element)
+        
+        if (score > bestScore && text.length > 100) {
+          bestContent = text
+          bestScore = score
+        }
+      }
+      
+      // Fallback to body if no good content found
+      if (!bestContent || bestContent.length < 100) {
+        const bodyElement = clonedDoc.body
+        if (bodyElement) {
+          bestContent = bodyElement.textContent || ''
+        }
+      }
+      
+      // Clean up and return the text
+      return this.cleanExtractedText(bestContent)
+        
+    } catch (error) {
+      console.error('Failed to extract page content:', error)
+      return ''
+    }
+  }
+
+  private scoreContentQuality(text: string, element: Element): number {
+    let score = 0
+    
+    // Base score from text length (longer is generally better for main content)
+    score += Math.min(text.length / 1000, 10)
+    
+    // Boost for paragraph density (main content usually has many <p> tags)
+    const paragraphs = element.querySelectorAll('p').length
+    score += paragraphs * 2
+    
+    // Boost for headings (h1-h6)
+    const headings = element.querySelectorAll('h1, h2, h3, h4, h5, h6').length
+    score += headings * 1.5
+    
+    // Penalize for too many links (navigation areas have lots of links)
+    const links = element.querySelectorAll('a').length
+    const linkDensity = links / Math.max(1, text.length / 100)
+    score -= linkDensity * 2
+    
+    // Penalize for UI keywords in the text
+    const uiKeywords = ['click', 'button', 'menu', 'navigation', 'cookie', 'privacy', 'terms', 'login', 'register']
+    const uiMatches = uiKeywords.filter(keyword => text.toLowerCase().includes(keyword)).length
+    score -= uiMatches * 0.5
+    
+    // Boost for semantic content indicators
+    const contentKeywords = ['article', 'content', 'post', 'story', 'blog', 'news']
+    const contentMatches = contentKeywords.filter(keyword => 
+      element.className.toLowerCase().includes(keyword) || 
+      element.tagName.toLowerCase().includes(keyword)
+    ).length
+    score += contentMatches * 2
+    
+    return score
+  }
+
+  private cleanExtractedText(text: string): string {
+    return text
+      .replace(/\s+/g, ' ') // Normalize whitespace
+      .replace(/\n+/g, ' ') // Replace newlines with spaces
+      .replace(/\t+/g, ' ') // Replace tabs with spaces
+      .replace(/[^\w\s\-.,!?;:()"'/]/g, ' ') // Keep only common punctuation
+      .trim()
+      .substring(0, 50000) // Limit to 50KB to avoid storage issues
   }
   
   async init() {

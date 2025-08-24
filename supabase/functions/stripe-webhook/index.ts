@@ -68,24 +68,16 @@ serve(async (req) => {
           const trialEnd = new Date()
           trialEnd.setDate(trialEnd.getDate() + 7)
           
-          const { error: rpcError } = await supabase.rpc('update_user_pro_status', {
+          const { error } = await supabase.rpc('update_user_pro_status_by_email', {
             p_user_email: session.customer_email,
             p_stripe_customer_id: session.customer as string,
             p_stripe_subscription_id: session.subscription as string,
-            p_status: 'trialing'
+            p_status: 'trialing',
+            p_trial_ends_at: trialEnd.toISOString()
           })
           
-          if (rpcError) {
-            console.error('RPC error:', rpcError)
-          }
-          
-          const { error: updateError } = await supabase
-            .from('users')
-            .update({ trial_ends_at: trialEnd.toISOString() })
-            .eq('email', session.customer_email)
-            
-          if (updateError) {
-            console.error('Update error:', updateError)
+          if (error) {
+            console.error('RPC error:', error)
           }
         }
         break
@@ -97,11 +89,12 @@ serve(async (req) => {
         const customer = await stripe.customers.retrieve(subscription.customer as string)
         
         if ('email' in customer && customer.email) {
-          const { error } = await supabase.rpc('update_user_pro_status', {
+          const { error } = await supabase.rpc('update_user_pro_status_by_email', {
             p_user_email: customer.email,
             p_stripe_customer_id: customer.id,
             p_stripe_subscription_id: subscription.id,
-            p_status: subscription.status
+            p_status: subscription.status,
+            p_trial_ends_at: null
           })
           
           if (error) {
@@ -116,11 +109,12 @@ serve(async (req) => {
         const customer = await stripe.customers.retrieve(subscription.customer as string)
         
         if ('email' in customer && customer.email) {
-          const { error } = await supabase.rpc('update_user_pro_status', {
+          const { error } = await supabase.rpc('update_user_pro_status_by_email', {
             p_user_email: customer.email,
             p_stripe_customer_id: customer.id,
             p_stripe_subscription_id: subscription.id,
-            p_status: 'canceled'
+            p_status: 'canceled',
+            p_trial_ends_at: null
           })
           
           if (error) {
@@ -134,17 +128,17 @@ serve(async (req) => {
         const invoice = event.data.object as Stripe.Invoice
         const customer = await stripe.customers.retrieve(invoice.customer as string)
         
-        if ('email' in customer && customer.email) {
-          const { error } = await supabase
-            .from('users')
-            .update({ 
-              is_pro: true,
-              subscription_status: 'active'
-            })
-            .eq('email', customer.email)
-            
+        if ('email' in customer && customer.email && invoice.subscription) {
+          const { error } = await supabase.rpc('update_user_pro_status_by_email', {
+            p_user_email: customer.email,
+            p_stripe_customer_id: customer.id,
+            p_stripe_subscription_id: invoice.subscription as string,
+            p_status: 'active',
+            p_trial_ends_at: null
+          })
+          
           if (error) {
-            console.error('Update error:', error)
+            console.error('RPC error:', error)
           }
         }
         break
@@ -154,16 +148,17 @@ serve(async (req) => {
         const invoice = event.data.object as Stripe.Invoice
         const customer = await stripe.customers.retrieve(invoice.customer as string)
         
-        if ('email' in customer && customer.email) {
-          const { error } = await supabase
-            .from('users')
-            .update({ 
-              subscription_status: 'past_due'
-            })
-            .eq('email', customer.email)
-            
+        if ('email' in customer && customer.email && invoice.subscription) {
+          const { error } = await supabase.rpc('update_user_pro_status_by_email', {
+            p_user_email: customer.email,
+            p_stripe_customer_id: customer.id,
+            p_stripe_subscription_id: invoice.subscription as string,
+            p_status: 'past_due',
+            p_trial_ends_at: null
+          })
+          
           if (error) {
-            console.error('Update error:', error)
+            console.error('RPC error:', error)
           }
         }
         break

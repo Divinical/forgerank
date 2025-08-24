@@ -32,48 +32,8 @@ export function Upgrade() {
         </p>
       </div>
       
-      {/* Pricing Cards */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 max-w-5xl mx-auto mb-12">
-        {/* Free Tier */}
-        <motion.div
-          whileHover={{ scale: 1.02 }}
-          className="bg-forge-light rounded-2xl p-8 border border-forge-lighter"
-        >
-          <div className="mb-6">
-            <h3 className="text-2xl font-bold text-white mb-2">Free</h3>
-            <p className="text-zinc-400">Perfect for getting started</p>
-          </div>
-          
-          <div className="mb-8">
-            <span className="text-4xl font-bold text-white">£0</span>
-            <span className="text-zinc-400">/month</span>
-          </div>
-          
-          <motion.button
-            whileHover={{ scale: 1.02 }}
-            whileTap={{ scale: 0.98 }}
-            className="w-full btn-secondary mb-8"
-            disabled={!isPro}
-          >
-            {isPro ? 'Current Plan' : 'Get Started'}
-          </motion.button>
-          
-          <ul className="space-y-3">
-            {features.filter(f => f.free).map((item) => (
-              <li key={item.feature} className="flex items-start gap-3">
-                <Check className="w-5 h-5 text-green-500 flex-shrink-0 mt-0.5" />
-                <span className="text-zinc-300">
-                  {item.feature}
-                  {typeof item.free === 'string' && (
-                    <span className="text-zinc-500 text-sm ml-1">({item.free})</span>
-                  )}
-                </span>
-              </li>
-            ))}
-          </ul>
-        </motion.div>
-        
-        {/* Pro Tier */}
+      {/* Pro Tier */}
+      <div className="max-w-md mx-auto mb-12">
         <motion.div
           whileHover={{ scale: 1.02 }}
           className="bg-forge-light rounded-2xl p-8 border-2 border-forge-orange relative overflow-hidden"

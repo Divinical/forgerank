@@ -63,7 +63,9 @@ export function SidebarTabSwitcher() {
         )}
       </div>
       
-      {tabs.map((tab) => {
+      {tabs
+        .filter(tab => tab.id !== 'upgrade' || !isPro) // Hide upgrade tab for Pro users
+        .map((tab) => {
         const Icon = tab.icon
         const isActive = activeTab === tab.id
         

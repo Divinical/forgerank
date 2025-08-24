@@ -56,10 +56,11 @@ interface AppState {
   keywords: Keyword[]
   
   // Core Actions
+  initializeAuth: () => Promise<void>
   signIn: (provider: 'github' | 'google' | 'email', email?: string, password?: string) => Promise<void>
   signOut: () => Promise<void>
-  checkAuth: () => Promise<void>
-  loadUserData: () => Promise<void>
+  resetPassword: (email: string) => Promise<void>
+  loadUserData: (forceRefresh?: boolean) => Promise<void>
   
   // Data Actions
   addTrackedUrl: (url: string) => Promise<void>
@@ -108,17 +109,81 @@ export const useStore = create<AppState>((set, get) => ({
   backlinks: [],
   keywords: [] as Keyword[],
   
+  // Strict auth initialization - only real authenticated users allowed
+  initializeAuth: async () => {
+    console.log('🔍 initializeAuth: Starting STRICT auth initialization...')
+    
+    try {
+      // Get current session from Supabase Auth
+      const { data: { session }, error } = await supabase.auth.getSession()
+      
+      if (error) {
+        console.error('🔍 initializeAuth: Auth error:', error)
+        set({ isAuthenticated: false, user: null, isPro: false })
+        return
+      }
+      
+      if (session?.user && session.access_token) {
+        console.log('🔍 initializeAuth: VALID session found')
+        console.log('🔍 initializeAuth: User ID:', session.user.id)
+        console.log('🔍 initializeAuth: User email:', session.user.email)
+        console.log('🔍 initializeAuth: Session expires:', new Date(session.expires_at! * 1000))
+        
+        // Verify this is a real Supabase Auth user by checking the JWT
+        if (session.user.aud === 'authenticated' && session.user.email) {
+          console.log('🔍 initializeAuth: Verified authenticated user')
+          set({ user: session.user, isAuthenticated: true })
+          get().loadUserData()
+          return
+        } else {
+          console.error('🔍 initializeAuth: Invalid user - not properly authenticated')
+          await supabase.auth.signOut()
+        }
+      }
+      
+      console.log('🔍 initializeAuth: No valid session - user must sign in')
+      set({ isAuthenticated: false, user: null, isPro: false })
+      
+    } catch (error) {
+      console.error('🔍 initializeAuth: Initialization error:', error)
+      set({ isAuthenticated: false, user: null, isPro: false })
+    }
+  },
+
   // Core Actions
   signIn: async (provider, email, password) => {
     try {
+      console.log('🔍 signIn: Starting authentication for provider:', provider)
       let result
       
       if (provider === 'email' && email && password) {
+        console.log('🔍 signIn: Attempting email sign-in for:', email)
+        
+        // Try sign in - do NOT automatically create account on failure
         result = await supabase.auth.signInWithPassword({ email, password })
-        if (result.error?.message?.includes('Invalid login credentials')) {
-          result = await supabase.auth.signUp({ email, password })
+        
+        if (result.error) {
+          console.log('🔍 signIn: Authentication failed:', result.error.message)
+          
+          // Check if user exists to provide better error message
+          const { data: existingUser } = await supabase
+            .schema('forgerank')
+            .from('users')
+            .select('email')
+            .eq('email', email)
+            .single()
+          
+          if (existingUser) {
+            // User exists, so it's likely a wrong password
+            throw new Error('Invalid email or password. Please check your credentials and try again.')
+          } else {
+            // User doesn't exist, offer to create account
+            throw new Error(`No account found for ${email}. Please check your email address or contact support to create an account.`)
+          }
         }
+        
       } else if (provider === 'github' || provider === 'google') {
+        console.log('🔍 signIn: OAuth sign-in for:', provider)
         result = await supabase.auth.signInWithOAuth({
           provider,
           options: {
@@ -127,20 +192,31 @@ export const useStore = create<AppState>((set, get) => ({
         })
       }
       
-      if (result?.error) throw result.error
+      if (result?.error) {
+        console.error('🔍 signIn: Authentication error:', result.error)
+        throw result.error
+      }
       
-      if (provider === 'email' && result?.data && 'user' in result.data && result.data.user) {
-        set({ user: result.data.user, isAuthenticated: true })
-        get().loadUserData()
+      // For email auth, immediately verify the session
+      if (provider === 'email' && result?.data && 'session' in result.data && result.data.session?.user) {
+        console.log('🔍 signIn: Email auth successful')
+        console.log('🔍 signIn: New user ID:', result.data.session.user.id)
+        console.log('🔍 signIn: New user email:', result.data.session.user.email)
+        
+        set({ user: result.data.session.user, isAuthenticated: true })
+        await get().loadUserData()
       }
       
       set({ isLoginModalOpen: false })
+      
     } catch (error) {
+      console.error('🔍 signIn: Sign-in failed:', error)
       throw error
     }
   },
   
   signOut: async () => {
+    console.log('🔍 signOut: Clearing user data and cache')
     await supabase.auth.signOut()
     set({ 
       user: null, 
@@ -149,38 +225,118 @@ export const useStore = create<AppState>((set, get) => ({
       backlinks: [],
       keywords: []
     })
+    console.log('🔍 signOut: Removing isPro from Chrome storage')
     chrome.storage.local.remove(['isPro'])
   },
-  
-  checkAuth: async () => {
+
+  resetPassword: async (email) => {
     try {
-      const { data: { session } } = await supabase.auth.getSession()
-      if (session?.user) {
-        set({ user: session.user, isAuthenticated: true })
-        get().loadUserData()
+      console.log('🔍 resetPassword: Sending password reset email to:', email)
+      const { error } = await supabase.auth.resetPasswordForEmail(email, {
+        redirectTo: chrome.identity.getRedirectURL()
+      })
+      
+      if (error) {
+        console.error('🔍 resetPassword: Failed to send reset email:', error)
+        throw error
       }
+      
+      console.log('🔍 resetPassword: Password reset email sent successfully')
     } catch (error) {
-      // Silent fail for auth check
+      console.error('🔍 resetPassword: Password reset failed:', error)
+      throw error
     }
   },
   
-  loadUserData: async () => {
-    const { user } = get()
-    if (!user) return
+  
+  loadUserData: async (forceRefresh = false) => {
+    const { user, backlinks, keywords, trackedUrls } = get()
+    if (!user) {
+      console.log('🔍 loadUserData: No user found, skipping')
+      return
+    }
+
+    // If we already have data and this isn't a forced refresh, skip data fetching
+    if (!forceRefresh && backlinks.length > 0 && keywords.length > 0 && trackedUrls.length > 0) {
+      console.log('🔍 loadUserData: Data already loaded, skipping refresh')
+      return
+    }
+    
+    console.log('🔍 Auth user:', { id: user.id, email: user.email })
+    console.log('🔍 Querying forgerank.users with ID:', user.id)
     
     try {
-      const { data: profile } = await supabase
+      // First try: lookup by ID
+      console.log('🔍 Attempting ID lookup first')
+      let { data: profile, error: queryError } = await supabase
+        .schema('forgerank')
         .from('users')
         .select('*')
         .eq('id', user.id)
         .single()
       
+      console.log('🔍 ID Query error:', queryError)
+      console.log('🔍 ID Profile found:', profile)
+      
+      // If ID lookup fails, try email lookup as fallback
+      if (!profile && user.email) {
+        console.log('🔍 ID lookup failed, trying email fallback:', user.email)
+        const emailResult = await supabase
+          .schema('forgerank')
+          .from('users')
+          .select('*')
+          .eq('email', user.email)
+          .single()
+        
+        profile = emailResult.data
+        queryError = emailResult.error
+        
+        console.log('🔍 Email Query error:', queryError)
+        console.log('🔍 Email Profile found:', profile)
+      }
+      
       if (profile) {
         const isPro = profile.is_pro || 
           (profile.trial_ends_at && new Date(profile.trial_ends_at) > new Date())
         
+        console.log('🔍 Pro status calculation:', {
+          isPro,
+          'profile.is_pro': profile.is_pro,
+          'profile.trial_ends_at': profile.trial_ends_at,
+          'trial_active': profile.trial_ends_at ? new Date(profile.trial_ends_at) > new Date() : false
+        })
+        
+        console.log('🔍 Setting isPro in React state:', isPro)
         set({ isPro })
+        
+        console.log('🔍 Saving isPro to Chrome storage:', isPro)
         chrome.storage.local.set({ isPro })
+      } else {
+        console.log('🔍 No profile found, creating new user profile')
+        // Create new user profile in forgerank.users
+        const { data: newProfile, error: createError } = await supabase
+          .schema('forgerank')
+          .from('users')
+          .insert({
+            id: user.id,
+            email: user.email!,
+            full_name: user.user_metadata?.full_name || null,
+            avatar_url: user.user_metadata?.avatar_url || null,
+            is_pro: false,
+            subscription_status: 'free',
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString()
+          })
+          .select()
+          .single()
+          
+        if (createError) {
+          console.error('🔍 Failed to create user profile:', createError)
+          set({ isPro: false })
+        } else {
+          console.log('🔍 Created new user profile:', newProfile)
+          set({ isPro: false })
+        }
       }
       
       await Promise.all([
@@ -192,7 +348,7 @@ export const useStore = create<AppState>((set, get) => ({
       get().syncBacklinksToSupabase()
       
     } catch (error) {
-      // Silent fail for user data loading
+      console.error('🔍 loadUserData error:', error)
     }
   },
   
@@ -227,6 +383,7 @@ export const useStore = create<AppState>((set, get) => ({
       // Save to Supabase if authenticated
       if (user) {
         const { error } = await supabase
+          .schema('forgerank')
           .from('tracked_urls')
           .insert({
             user_id: user.id,
@@ -267,6 +424,7 @@ export const useStore = create<AppState>((set, get) => ({
     // Update Supabase if authenticated
     if (user) {
       await supabase
+        .schema('forgerank')
         .from('tracked_urls')
         .delete()
         .eq('user_id', user.id)
@@ -285,6 +443,7 @@ export const useStore = create<AppState>((set, get) => ({
     // Then fetch from Supabase if authenticated
     if (user) {
       const { data, error } = await supabase
+        .schema('forgerank')
         .from('tracked_urls')
         .select('*')
         .eq('user_id', user.id)
@@ -326,12 +485,10 @@ export const useStore = create<AppState>((set, get) => ({
         contextType: bl.contextType
       }))
       
-      // Set local backlinks immediately
-      set({ backlinks: normalizedBacklinks })
-      
       // If Pro user, merge with Supabase data
       if (user && isPro) {
         const { data } = await supabase
+          .schema('forgerank')
           .from('backlinks')
           .select('*')
           .eq('user_id', user.id)
@@ -339,10 +496,32 @@ export const useStore = create<AppState>((set, get) => ({
           .limit(50)
         
         if (data) {
-          const merged = [...data, ...normalizedBacklinks]
+          // Merge local and Supabase data, prioritizing newer items
+          const merged = [...normalizedBacklinks, ...data]
+            .sort((a: any, b: any) => {
+              const timeA = new Date(a.created_at || a.timestamp || a.first_seen_at || 0).getTime()
+              const timeB = new Date(b.created_at || b.timestamp || b.first_seen_at || 0).getTime()
+              return timeB - timeA // Newest first
+            })
             .slice(0, 100)
           set({ backlinks: merged })
+        } else {
+          // No Supabase data, just use local sorted
+          const sorted = normalizedBacklinks.sort((a: any, b: any) => {
+            const timeA = new Date(a.created_at || a.timestamp || a.first_seen_at || 0).getTime()
+            const timeB = new Date(b.created_at || b.timestamp || b.first_seen_at || 0).getTime()
+            return timeB - timeA // Newest first
+          })
+          set({ backlinks: sorted })
         }
+      } else {
+        // Not Pro user, just use local sorted
+        const sorted = normalizedBacklinks.sort((a: any, b: any) => {
+          const timeA = new Date(a.created_at || a.timestamp || a.first_seen_at || 0).getTime()
+          const timeB = new Date(b.created_at || b.timestamp || b.first_seen_at || 0).getTime()
+          return timeB - timeA // Newest first
+        })
+        set({ backlinks: sorted })
       }
       
     } catch (error) {
@@ -362,6 +541,7 @@ export const useStore = create<AppState>((set, get) => ({
       if (localBacklinks.length === 0) return
       
       const { data: trackedUrls } = await supabase
+        .schema('forgerank')
         .from('tracked_urls')
         .select('id, url')
         .eq('user_id', user.id)
@@ -386,6 +566,7 @@ export const useStore = create<AppState>((set, get) => ({
       
       if (backlinksToSync.length > 0) {
         await supabase
+          .schema('forgerank')
           .from('backlinks')
           .upsert(backlinksToSync, { 
             onConflict: 'source_url,target_url,user_id',
@@ -410,6 +591,7 @@ export const useStore = create<AppState>((set, get) => ({
       
       if (user && isPro) {
         const { data } = await supabase
+          .schema('forgerank')
           .from('keywords')
           .select('*')
           .eq('user_id', user.id)

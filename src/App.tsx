@@ -12,18 +12,19 @@ import { useStore } from './store/useStore'
 import { supabase } from './lib/supabase'
 
 function App() {
-  const { activeTab, isDarkMode, checkAuth, loadUserData, fetchBacklinks, setUser, setIsAuthenticated } = useStore()
+  const { activeTab, isDarkMode, loadUserData, fetchBacklinks, setUser, setIsAuthenticated, initializeAuth } = useStore()
   
-  // Check authentication on mount and listen for auth changes
+  // Initialize authentication on mount and listen for auth changes
   useEffect(() => {
-    checkAuth()
+    // Use the new initialization function instead of checkAuth
+    initializeAuth()
     
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
       async (event, session) => {
         if (event === 'SIGNED_IN' && session?.user) {
           setUser(session.user)
           setIsAuthenticated(true)
-          loadUserData()
+          // loadUserData is called by initializeAuth, don't duplicate
         } else if (event === 'SIGNED_OUT') {
           setUser(null)
           setIsAuthenticated(false)
@@ -35,6 +36,8 @@ function App() {
         } else if (event === 'TOKEN_REFRESHED' && session?.user) {
           setUser(session.user)
           setIsAuthenticated(true)
+          // Only load user data on token refresh to sync latest data
+          loadUserData()
         }
       }
     )
@@ -48,6 +51,20 @@ function App() {
       if (message.type === 'BACKLINKS_UPDATED') {
         fetchBacklinks()
         useStore.getState().fetchKeywords()
+      } else if (message.type === 'KEYWORD_SOURCES_UPDATED') {
+        // New content sources available, trigger keyword extraction in background
+        const { backlinks } = useStore.getState()
+        if (backlinks.length > 0) {
+          // Trigger async keyword extraction without blocking UI
+          import('./utils/keywordExtractor').then(({ extractKeywordsFromBacklinks }) => {
+            extractKeywordsFromBacklinks(backlinks).then((keywords: any) => {
+              useStore.setState({ keywords })
+              console.log(`🔍 Auto-extracted ${keywords.length} keywords from new content sources`)
+            }).catch((error: any) => {
+              console.error('🔍 Auto keyword extraction failed:', error)
+            })
+          })
+        }
       }
     }
     
