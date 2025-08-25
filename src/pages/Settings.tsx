@@ -1,13 +1,15 @@
 import { motion } from 'framer-motion'
-import { Moon, Sun, Trash2, Download, RefreshCw, Bell, LogOut } from 'lucide-react'
+import { Moon, Sun, Trash2, Download, RefreshCw, Bell, LogOut, FileText, Hash, Database } from 'lucide-react'
 import { useStore } from '../store/useStore'
 import { useState } from 'react'
 import { ResetConfirmModal } from '../components/ResetConfirmModal'
+import { CSVExporter } from '../utils/csvExporter'
 
 export function Settings() {
   const { isDarkMode, toggleDarkMode, notificationsEnabled, toggleNotifications, isAuthenticated, user, signOut, backlinks, keywords } = useStore()
   const [loading, setLoading] = useState<string>('')
   const [showResetModal, setShowResetModal] = useState(false)
+  const csvExporter = new CSVExporter()
   
   const handleExportAllData = () => {
     if (!isAuthenticated) return
@@ -35,6 +37,48 @@ export function Settings() {
     window.URL.revokeObjectURL(url)
     
     setTimeout(() => setLoading(''), 1000)
+  }
+
+  const handleExportBacklinksCSV = () => {
+    if (!isAuthenticated || backlinks.length === 0) return
+    
+    setLoading('csv-backlinks')
+    try {
+      csvExporter.exportBacklinks(backlinks)
+      console.log('✅ Backlinks exported to CSV successfully')
+    } catch (error) {
+      console.error('❌ Failed to export backlinks CSV:', error)
+    } finally {
+      setTimeout(() => setLoading(''), 1000)
+    }
+  }
+
+  const handleExportKeywordsCSV = () => {
+    if (!isAuthenticated || keywords.length === 0) return
+    
+    setLoading('csv-keywords')
+    try {
+      csvExporter.exportKeywords(keywords)
+      console.log('✅ Keywords exported to CSV successfully')
+    } catch (error) {
+      console.error('❌ Failed to export keywords CSV:', error)
+    } finally {
+      setTimeout(() => setLoading(''), 1000)
+    }
+  }
+
+  const handleExportCombinedCSV = () => {
+    if (!isAuthenticated || (backlinks.length === 0 && keywords.length === 0)) return
+    
+    setLoading('csv-combined')
+    try {
+      csvExporter.exportCombined(backlinks, keywords)
+      console.log('✅ Combined data exported to CSV successfully')
+    } catch (error) {
+      console.error('❌ Failed to export combined CSV:', error)
+    } finally {
+      setTimeout(() => setLoading(''), 1000)
+    }
   }
   
   const handleClearCache = async () => {
@@ -182,6 +226,41 @@ export function Settings() {
           <h3 className="text-xl font-semibold text-white mb-4">Data Management</h3>
           
           <div className="space-y-3">
+            <div className="grid grid-cols-2 gap-3">
+              <motion.button
+                whileHover={{ scale: 1.02 }}
+                whileTap={{ scale: 0.98 }}
+                onClick={handleExportBacklinksCSV}
+                disabled={!isAuthenticated || backlinks.length === 0 || loading === 'csv-backlinks'}
+                className="btn-secondary flex items-center justify-center gap-2 text-sm disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                <FileText className="w-4 h-4" />
+                {loading === 'csv-backlinks' ? 'Exporting...' : 'Backlinks CSV'}
+              </motion.button>
+              
+              <motion.button
+                whileHover={{ scale: 1.02 }}
+                whileTap={{ scale: 0.98 }}
+                onClick={handleExportKeywordsCSV}
+                disabled={!isAuthenticated || keywords.length === 0 || loading === 'csv-keywords'}
+                className="btn-secondary flex items-center justify-center gap-2 text-sm disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                <Hash className="w-4 h-4" />
+                {loading === 'csv-keywords' ? 'Exporting...' : 'Keywords CSV'}
+              </motion.button>
+            </div>
+            
+            <motion.button
+              whileHover={{ scale: 1.02 }}
+              whileTap={{ scale: 0.98 }}
+              onClick={handleExportCombinedCSV}
+              disabled={!isAuthenticated || (backlinks.length === 0 && keywords.length === 0) || loading === 'csv-combined'}
+              className="w-full btn-secondary flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              <Database className="w-4 h-4" />
+              {loading === 'csv-combined' ? 'Exporting...' : 'Combined CSV Export'}
+            </motion.button>
+            
             <motion.button
               whileHover={{ scale: 1.02 }}
               whileTap={{ scale: 0.98 }}
@@ -190,7 +269,7 @@ export function Settings() {
               className="w-full btn-secondary flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
             >
               <Download className="w-4 h-4" />
-              {loading === 'export' ? 'Exporting...' : 'Export All Data'}
+              {loading === 'export' ? 'Exporting...' : 'JSON Backup'}
             </motion.button>
             
             <motion.button

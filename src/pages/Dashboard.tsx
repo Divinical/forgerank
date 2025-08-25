@@ -2,6 +2,8 @@ import { motion } from 'framer-motion'
 import { TrendingUp, Link, Hash, Clock } from 'lucide-react'
 import { useStore } from '../store/useStore'
 import { format } from 'date-fns'
+import { SmartScanningTeaser, GrowthValuePrompt } from '../components/UpgradePrompts'
+import { UpgradePromptBanner, useUpgradePromptTrigger } from '../components/UpgradePromptBanner'
 
 // Simple date formatting with fallback
 function formatDate(dateValue: any, formatString: string, fallback: string = 'Never'): string {
@@ -16,7 +18,8 @@ function formatDate(dateValue: any, formatString: string, fallback: string = 'Ne
 }
 
 export function Dashboard() {
-  const { trackedUrls, backlinks, keywords, isAuthenticated } = useStore()
+  const { trackedUrls, backlinks, keywords, isAuthenticated, isPro } = useStore()
+  const upgradePromptTrigger = useUpgradePromptTrigger()
   
   // Calculate stats
   const totalBacklinks = backlinks.length
@@ -69,6 +72,11 @@ export function Dashboard() {
           color="text-orange-500"
         />
       </div>
+      
+      {/* Smart Upgrade Prompt Banner */}
+      {upgradePromptTrigger && (
+        <UpgradePromptBanner trigger={upgradePromptTrigger} />
+      )}
       
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {/* Getting Started */}
@@ -123,6 +131,29 @@ export function Dashboard() {
         </div>
       </div>
       
+      {/* Growth Tier Conversion Prompts for authenticated free users */}
+      {isAuthenticated && !isPro && totalBacklinks > 10 && (
+        <motion.div
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          transition={{ delay: 0.5 }}
+          className="mt-6"
+        >
+          <SmartScanningTeaser />
+        </motion.div>
+      )}
+      
+      {isAuthenticated && !isPro && trackedUrls.length >= 1 && (
+        <motion.div
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          transition={{ delay: 0.7 }}
+          className="mt-6"
+        >
+          <GrowthValuePrompt />
+        </motion.div>
+      )}
+      
       {!isAuthenticated && (
         <motion.div
           initial={{ opacity: 0 }}
@@ -134,7 +165,7 @@ export function Dashboard() {
             Unlock Your Full Potential
           </h3>
           <p className="text-zinc-300 mb-4">
-            Sign in to sync across devices and access Pro features
+            Sign in to sync across devices and access Growth tier features
           </p>
           <motion.button
             whileHover={{ scale: 1.05 }}

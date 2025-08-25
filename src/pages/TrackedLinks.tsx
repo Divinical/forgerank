@@ -4,6 +4,7 @@ import { motion } from 'framer-motion'
 import { Plus, Trash2, ExternalLink, AlertCircle } from 'lucide-react'
 import { useState } from 'react'
 import { useStore } from '../store/useStore'
+import { DomainLimitPrompt } from '../components/UpgradePrompts'
 
 export function TrackedLinks() {
   const { trackedUrls, addTrackedUrl, removeTrackedUrl, isPro, isAuthenticated, user } = useStore()
@@ -11,7 +12,7 @@ export function TrackedLinks() {
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
   
-  const maxUrls = isPro ? 20 : 3
+  const maxUrls = isPro ? 10 : 2
   
   const handleAddUrl = async () => {
     setError('')
@@ -67,7 +68,7 @@ export function TrackedLinks() {
       <p>Authenticated: {isAuthenticated ? 'Yes' : 'No'}</p>
       <p>User: {user?.email || 'None'}</p>
       <p>User ID: {user?.id || 'None'}</p>
-      <p>Pro Status: {isPro ? 'Yes' : 'No'}</p>
+      <p>Growth Tier: {isPro ? 'Yes' : 'No'}</p>
       <p>Tracked URLs: {trackedUrls.length}/{maxUrls}</p>
       
       <div className="flex gap-2 pt-2 border-t border-blue-500/30">
@@ -134,7 +135,7 @@ export function TrackedLinks() {
                 handleAddUrl()
               }
             }}
-            placeholder="https://example.com or example.com"
+            placeholder="example.com"
             className="input-field flex-1"
             disabled={loading}
           />
@@ -157,6 +158,25 @@ export function TrackedLinks() {
               </>
             )}
           </motion.button>
+          
+          {/* Debug: Manual scanner refresh button */}
+          <motion.button
+            whileHover={{ scale: 1.02 }}
+            whileTap={{ scale: 0.98 }}
+            onClick={async () => {
+              const tabs = await chrome.tabs.query({})
+              tabs.forEach(tab => {
+                if (tab.id) {
+                  chrome.tabs.sendMessage(tab.id, { type: 'RELOAD_SCANNER_STATE', trackedUrls })
+                    .catch(() => {}) // Ignore errors for tabs without content scripts
+                }
+              })
+            }}
+            className="btn-secondary flex items-center gap-2 text-xs"
+            title="Debug: Force refresh scanners in all tabs"
+          >
+            🔄 Debug
+          </motion.button>
         </div>
         
         {error && (
@@ -167,10 +187,8 @@ export function TrackedLinks() {
         )}
         
         {trackedUrls.length >= maxUrls && !isPro && (
-          <div className="mt-3 p-3 bg-forge-orange/10 border border-forge-orange/30 rounded-lg">
-            <p className="text-sm text-forge-orange">
-              🔒 You've reached the free tier limit. Upgrade to Pro to track up to 20 URLs.
-            </p>
+          <div className="mt-3">
+            <DomainLimitPrompt />
           </div>
         )}
       </div>
@@ -220,6 +238,31 @@ export function TrackedLinks() {
           ))
         )}
       </div>
+      
+      {/* Debug/Cleanup Tools */}
+      {isPro && (
+        <motion.div
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          className="mt-6 p-4 bg-zinc-800/50 rounded-xl border border-zinc-700"
+        >
+          <h3 className="text-sm font-medium text-zinc-300 mb-3">Data Management</h3>
+          <div className="flex gap-2">
+            <motion.button
+              whileHover={{ scale: 1.02 }}
+              whileTap={{ scale: 0.98 }}
+              onClick={async () => {
+                console.log('🧹 Starting manual duplicate cleanup...')
+                await useStore.getState().cleanupDuplicateBacklinks()
+                console.log('🧹 Duplicate cleanup completed')
+              }}
+              className="px-3 py-2 bg-orange-500/20 border border-orange-500/50 rounded text-orange-400 hover:bg-orange-500/30 transition-colors text-sm"
+            >
+              Clean Duplicates
+            </motion.button>
+          </div>
+        </motion.div>
+      )}
       
       {!isAuthenticated && (
         <motion.div

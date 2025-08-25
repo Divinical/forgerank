@@ -24,6 +24,9 @@ interface CandidateLink {
   element: string
 }
 
+// Prevent multiple class declarations when content script is re-injected
+if (!(window as any).BacklinkScanner) {
+
 class BacklinkScanner {
   public trackedUrls: string[] = []
   private foundLinks: DetectedLink[] = []
@@ -47,6 +50,16 @@ class BacklinkScanner {
           url: window.location.href
         })
         return true // Keep message channel open for async response
+      }
+      
+      if (message.type === 'PING_SCANNER') {
+        sendResponse({
+          alive: true,
+          trackedUrls: this.trackedUrls.length,
+          url: window.location.href,
+          lastScan: this.foundLinks.length
+        })
+        return true
       }
     })
   }
@@ -176,12 +189,15 @@ class BacklinkScanner {
       const result = await chrome.storage.local.get('trackedUrls')
       this.trackedUrls = result.trackedUrls || []
       
-      if (this.trackedUrls.length === 0) {
-        return
-      }
-      
-      this.performScan()
+      // Always set up page observation, even with no tracked URLs
+      // This ensures scanner is ready when URLs are added during onboarding
       this.observePageChanges()
+      
+      if (this.trackedUrls.length > 0) {
+        this.performScan()
+      } else {
+        console.log('CS: Scanner initialized with no tracked URLs - ready for onboarding')
+      }
       
     } catch (error) {
       // Silent fail - extension context may be invalidated
@@ -228,7 +244,8 @@ class BacklinkScanner {
         href,
         anchorText: text,
         element: `anchor[${index}]`,
-        parentTag: element.parentElement?.tagName || 'unknown'
+        parentTag: element.parentElement?.tagName || 'unknown',
+        htmlElement: element
       })
     })
   }
@@ -256,7 +273,8 @@ class BacklinkScanner {
             href: url,
             anchorText: url,
             element: `text[${textNodeCount}]`,
-            parentTag: (node?.parentElement?.tagName || 'TEXT')
+            parentTag: (node?.parentElement?.tagName || 'TEXT'),
+            htmlElement: node?.parentElement || undefined
           })
         })
       }
@@ -276,7 +294,8 @@ class BacklinkScanner {
           href: dataHref,
           anchorText: el.textContent?.trim() || '',
           element: `data[${index}]`,
-          parentTag: el.tagName
+          parentTag: el.tagName,
+          htmlElement: el
         })
       }
       
@@ -287,7 +306,8 @@ class BacklinkScanner {
             href: urlMatch[0],
             anchorText: el.textContent?.trim() || '',
             element: `onclick[${index}]`,
-            parentTag: el.tagName
+            parentTag: el.tagName,
+            htmlElement: el
           })
         }
       }
@@ -299,6 +319,7 @@ class BacklinkScanner {
     anchorText: string
     element: string
     parentTag: string
+    htmlElement?: HTMLElement
   }) {
     const normalizedHref = this.normalizeUrl(candidate.href)
     if (!normalizedHref) {
@@ -332,7 +353,7 @@ class BacklinkScanner {
       const detectedLink: DetectedLink = {
         href: candidate.href,
         anchorText: candidate.anchorText,
-        contextType: this.detectContextType(candidate.parentTag),
+        contextType: this.detectContextType(candidate.htmlElement || null, candidate.parentTag),
         parentTagName: candidate.parentTag,
         isHidden: false,
         timestamp: this.safeTimestamp(),
@@ -382,6 +403,22 @@ class BacklinkScanner {
       return { isMatch: false, skipReason: 'URL normalization failed' }
     }
     
+    // CRITICAL FIX: Skip internal links (same domain)
+    // A backlink should only be from an EXTERNAL site linking TO your tracked domain
+    try {
+      const currentDomain = window.location.hostname
+      const candidateDomain = new URL(normalizedCandidate).hostname
+      
+      if (currentDomain === candidateDomain) {
+        return { 
+          isMatch: false, 
+          skipReason: `Internal link (same domain: ${currentDomain}) - not a backlink` 
+        }
+      }
+    } catch (e) {
+      // Continue with normal processing if domain parsing fails
+    }
+    
     // Check against each tracked URL
     for (let i = 0; i < this.trackedUrls.length; i++) {
       const trackedUrl = this.trackedUrls[i]
@@ -395,22 +432,22 @@ class BacklinkScanner {
         
         // 1. Exact match
         if (normalizedCandidate === normalizedTracked) {
-          return { isMatch: true, matchReason: `Exact match with tracked[${i}]: ${trackedUrl}` }
+          return { isMatch: true, matchReason: `External backlink: exact match with tracked[${i}]: ${trackedUrl}` }
         }
         
         // 2. Subpage match (candidate starts with tracked)
         if (normalizedCandidate.startsWith(normalizedTracked + '/')) {
-          return { isMatch: true, matchReason: `Subpage match with tracked[${i}]: ${trackedUrl}` }
+          return { isMatch: true, matchReason: `External backlink: subpage match with tracked[${i}]: ${trackedUrl}` }
         }
         
         // 3. Same domain
         if (candidateParsed.hostname === trackedParsed.hostname) {
-          return { isMatch: true, matchReason: `Same domain match with tracked[${i}]: ${trackedUrl}` }
+          return { isMatch: true, matchReason: `External backlink: same domain match with tracked[${i}]: ${trackedUrl}` }
         }
         
         // 4. Subdomain match
         if (candidateParsed.hostname.endsWith('.' + trackedParsed.hostname)) {
-          return { isMatch: true, matchReason: `Subdomain match with tracked[${i}]: ${trackedUrl}` }
+          return { isMatch: true, matchReason: `External backlink: subdomain match with tracked[${i}]: ${trackedUrl}` }
         }
         
       } catch (e) {
@@ -424,12 +461,129 @@ class BacklinkScanner {
     }
   }
   
-  private detectContextType(parentTag: string): 'code' | 'config' | 'comment' | 'generic' {
-    const tag = parentTag.toLowerCase()
-    if (['pre', 'code'].includes(tag)) return 'code'
-    if (tag.includes('comment')) return 'comment'
-    if (tag.includes('config') || tag.includes('setting')) return 'config'
+  private detectContextType(element: HTMLElement | null, parentTag: string): 'code' | 'config' | 'comment' | 'generic' {
+    if (!element) {
+      // Fallback to basic detection if no element provided
+      const tag = parentTag.toLowerCase()
+      if (['pre', 'code'].includes(tag)) return 'code'
+      if (tag.includes('comment')) return 'comment'
+      if (tag.includes('config') || tag.includes('setting')) return 'config'
+      return 'generic'
+    }
+
+    // Advanced context detection using DOM traversal
+    const context = this.analyzeElementContext(element)
+    
+    if (context.isCodeContext) return 'code'
+    if (context.isCommentContext) return 'comment'
+    if (context.isConfigContext) return 'config'
+    
     return 'generic'
+  }
+
+  private analyzeElementContext(element: HTMLElement): {
+    isCodeContext: boolean
+    isCommentContext: boolean
+    isConfigContext: boolean
+  } {
+    // Check element and its ancestors up to 5 levels
+    let currentElement: HTMLElement | null = element
+    let depth = 0
+    const maxDepth = 5
+
+    while (currentElement && depth < maxDepth) {
+      const tagName = currentElement.tagName.toLowerCase()
+      const className = currentElement.className.toLowerCase()
+      const id = currentElement.id.toLowerCase()
+      
+      // Code context detection
+      const codeIndicators = [
+        // Direct code tags
+        tagName === 'code',
+        tagName === 'pre',
+        tagName === 'kbd',
+        tagName === 'samp',
+        tagName === 'var',
+        // Common code block classes
+        className.includes('code'),
+        className.includes('highlight'),
+        className.includes('syntax'),
+        className.includes('language-'),
+        className.includes('hljs'),
+        className.includes('prism'),
+        className.includes('codehilite'),
+        className.includes('sourceCode'),
+        // Code block IDs
+        id.includes('code'),
+        id.includes('syntax')
+      ]
+
+      if (codeIndicators.some(Boolean)) {
+        return { isCodeContext: true, isCommentContext: false, isConfigContext: false }
+      }
+
+      // Comment context detection
+      const commentIndicators = [
+        className.includes('comment'),
+        className.includes('reply'),
+        className.includes('discussion'),
+        className.includes('feedback'),
+        className.includes('review'),
+        id.includes('comment'),
+        id.includes('discussion'),
+        // GitHub-style comments
+        className.includes('js-comment'),
+        className.includes('comment-body'),
+        // Blog/forum comments
+        tagName === 'aside' && (className.includes('comment') || className.includes('reply')),
+        // WordPress/common CMS comment patterns
+        className.includes('wp-comment'),
+        className.includes('comment-content'),
+        className.includes('comment-text')
+      ]
+
+      if (commentIndicators.some(Boolean)) {
+        return { isCodeContext: false, isCommentContext: true, isConfigContext: false }
+      }
+
+      // Config context detection
+      const href = element.getAttribute('href') || ''
+      const configIndicators = [
+        className.includes('config'),
+        className.includes('settings'),
+        className.includes('preferences'),
+        className.includes('options'),
+        id.includes('config'),
+        id.includes('settings'),
+        // File extension patterns in URLs
+        href.includes('.json'),
+        href.includes('.yaml'),
+        href.includes('.yml'),
+        href.includes('.toml'),
+        href.includes('.ini'),
+        href.includes('.conf'),
+        href.includes('.cfg'),
+        href.includes('.env'),
+        href.includes('package.json'),
+        href.includes('composer.json'),
+        href.includes('tsconfig.json'),
+        href.includes('webpack.config'),
+        href.includes('vite.config'),
+        // Config-related text content
+        (currentElement.textContent || '').toLowerCase().includes('configuration'),
+        (currentElement.textContent || '').toLowerCase().includes('package.json'),
+        (currentElement.textContent || '').toLowerCase().includes('config file')
+      ]
+
+      if (configIndicators.some(Boolean)) {
+        return { isCodeContext: false, isCommentContext: false, isConfigContext: true }
+      }
+
+      currentElement = currentElement.parentElement
+      depth++
+    }
+
+    return { isCodeContext: false, isCommentContext: false, isConfigContext: false }
   }
   
   private safeTimestamp(): string {
@@ -451,15 +605,26 @@ class BacklinkScanner {
       const newTrackedUrls = result.trackedUrls || []
       
       if (JSON.stringify(this.trackedUrls) !== JSON.stringify(newTrackedUrls)) {
+        console.log('CS: Updating tracked URLs:', newTrackedUrls.length)
         this.trackedUrls = newTrackedUrls
         
         if (newTrackedUrls.length > 0) {
           this.performScan()
+        } else {
+          // Clear existing results if no URLs to track
+          this.foundLinks = []
+          this.candidateLinks = []
         }
       }
     } catch (error) {
-      // Silent fail
+      console.log('CS: Failed to reload tracked URLs:', error)
     }
+  }
+  
+  // Enhanced state refresh method
+  public refreshState() {
+    console.log('CS: Refreshing scanner state for', window.location.href)
+    this.reloadTrackedUrls()
   }
   
   
@@ -537,34 +702,92 @@ class BacklinkScanner {
   }
 }
 
+// Store the class on window to prevent redeclaration
+;(window as any).BacklinkScanner = BacklinkScanner
+
+}
+
 // Initialize scanner only if extension context is valid
 if (chrome && chrome.storage && chrome.runtime) {
-  const scanner = new BacklinkScanner()
-  ;(window as any).forgeRankScanner = scanner
-
-  // Listen for messages from background script
-  chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-    if (message.type === 'RELOAD_SCANNER_STATE') {
-      scanner.trackedUrls = message.trackedUrls || []
-      scanner.performScan()
-      sendResponse({ success: true })
-    }
-  })
-
-  // Trigger scan when DOM is ready
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', () => {
-      scanner.performScan()
-    })
+  // Prevent double initialization if content script is re-injected
+  if ((window as any).forgeRankScanner) {
+    console.log('CS: Scanner already exists, refreshing state...')
+    ;(window as any).forgeRankScanner.refreshState()
   } else {
-    scanner.performScan()
-  }
-  
-  // Cleanup on page unload to prevent memory leaks
-  window.addEventListener('beforeunload', () => {
-    scanner.cleanup()
-  })
+    console.log('CS: Creating new scanner instance...')
+    const scanner = new (window as any).BacklinkScanner()
+    ;(window as any).forgeRankScanner = scanner
+
+    // Listen for messages from background script
+    chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+      if (message.type === 'RELOAD_SCANNER_STATE') {
+        scanner.trackedUrls = message.trackedUrls || []
+        scanner.performScan()
+        sendResponse({ success: true })
+      }
+    })
+
+    // Enhanced initialization - fixes navigation scanning
+    let currentUrl = window.location.href
+    
+    function initializeScanner() {
+      console.log('CS: Initializing scanner for', currentUrl)
+      scanner.performScan()
+    }
+    
+    // Trigger scan when DOM is ready
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', initializeScanner)
+    } else {
+      initializeScanner()
+    }
+    
+    // Detect URL changes (fixes SPA navigation scanning)
+    const urlChangeObserver = new MutationObserver(() => {
+      const newUrl = window.location.href
+      if (newUrl !== currentUrl) {
+        console.log('CS: URL changed from', currentUrl, 'to', newUrl)
+        currentUrl = newUrl
+        
+        // Small delay to let SPA content load
+        setTimeout(() => {
+          scanner.refreshState()
+        }, 1000)
+      }
+    })
+    
+    // Start observing for SPA navigation
+    urlChangeObserver.observe(document, {
+      subtree: true,
+      childList: true
+    })
+    
+    // Also listen for history API changes
+    const originalPushState = history.pushState
+    const originalReplaceState = history.replaceState
+    
+    history.pushState = function(...args) {
+      originalPushState.apply(history, args)
+      setTimeout(() => scanner.refreshState(), 1000)
+    }
+    
+    history.replaceState = function(...args) {
+      originalReplaceState.apply(history, args)
+      setTimeout(() => scanner.refreshState(), 1000)
+    }
+    
+    // Listen for popstate (back/forward buttons)
+    window.addEventListener('popstate', () => {
+      setTimeout(() => scanner.refreshState(), 1000)
+    })
+    
+    // Cleanup on page unload to prevent memory leaks
+    window.addEventListener('beforeunload', () => {
+      urlChangeObserver.disconnect()
+      scanner.cleanup()
+    })
+  }  // Close the else block
   
 } else {
-  // Extension context not available - skip initialization
+  console.log('CS: Extension context not available - skipping scanner initialization')
 }

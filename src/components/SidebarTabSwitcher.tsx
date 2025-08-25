@@ -5,7 +5,8 @@ import {
   LayoutDashboard, 
   Link, 
   LinkIcon, 
-  Hash, 
+  Hash,
+  Search,
   Settings, 
   Sparkles,
   LogIn,
@@ -18,6 +19,7 @@ const tabs = [
   { id: 'tracked-links', label: 'Tracked Links', icon: Link },
   { id: 'backlinks', label: 'Backlinks', icon: LinkIcon },
   { id: 'keywords', label: 'Keywords', icon: Hash },
+  { id: 'smart-scanning', label: 'Smart Scanning', icon: Search, growthOnly: true },
   { id: 'settings', label: 'Settings', icon: Settings },
   { id: 'upgrade', label: 'Upgrade', icon: Sparkles },
 ] as const
@@ -45,7 +47,7 @@ export function SidebarTabSwitcher() {
             {isPro && (
               <div className="px-2">
                 <span className="text-xs bg-forge-orange/20 text-forge-orange px-2 py-1 rounded-full">
-                  PRO
+                  GROWTH
                 </span>
               </div>
             )}
@@ -64,7 +66,13 @@ export function SidebarTabSwitcher() {
       </div>
       
       {tabs
-        .filter(tab => tab.id !== 'upgrade' || !isPro) // Hide upgrade tab for Pro users
+        .filter(tab => {
+          // Hide upgrade tab for Growth users
+          if (tab.id === 'upgrade' && isPro) return false
+          // Show Growth-only tabs only if user has Growth tier
+          if ((tab as any).growthOnly && !isPro) return false
+          return true
+        })
         .map((tab) => {
         const Icon = tab.icon
         const isActive = activeTab === tab.id
@@ -97,7 +105,7 @@ export function SidebarTabSwitcher() {
             
             {tab.id === 'upgrade' && !isPro && (
               <span className="ml-auto text-xs bg-forge-orange/20 text-forge-orange px-1.5 py-0.5 rounded-full relative z-10 flex-shrink-0">
-                PRO
+                £9/mo
               </span>
             )}
           </motion.button>

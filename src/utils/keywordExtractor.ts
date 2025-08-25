@@ -1,5 +1,7 @@
 import type { Keyword } from '../types/keyword'
-// Keyword extraction utility - runs in UI thread with idle callbacks
+import { detectNiche, getNicheRelevanceTerms, getNicheStopWords, getNicheContextWeights } from './nicheDetector'
+import { assignSemanticClusters } from './semanticClustering'
+// Advanced keyword extraction with niche detection, semantic clustering, and LLM optimization
 
 // Comprehensive English stopwords to filter out
 const STOPWORDS = new Set([
@@ -71,115 +73,363 @@ const WEB_UI_STOPWORDS = new Set([
   'docs', 'guide', 'tutorial', 'example', 'demo', 'test', 'sample'
 ])
 
-// General business/tech terms that indicate relevance
-const BUSINESS_TECH_TERMS = new Set([
-  'development', 'developer', 'software', 'code', 'coding', 'programming',
-  'tech', 'technology', 'startup', 'business', 'product', 'tool', 'tools',
-  'platform', 'service', 'solution', 'framework', 'library', 'repository',
-  'project', 'open', 'source', 'community', 'build', 'building', 'maker',
-  'creator', 'founder', 'entrepreneur', 'innovation', 'digital', 'online',
-  'api', 'sdk', 'cli', 'npm', 'package', 'module', 'component', 'feature'
-])
+// Named Entity Recognition patterns
+const ENTITY_PATTERNS = {
+  // Brand/Company names (capitalized words)
+  brands: /\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*\b/g,
+  // Technical terms with special chars
+  technical: /\b\w+[-_]\w+\b/g,
+  // Acronyms
+  acronyms: /\b[A-Z]{2,}\b/g,
+  // Version numbers or model numbers
+  versions: /\b\w+\s*\d+(?:\.\d+)*\b/g
+}
 
+// LLM-preferred keyword types
+const LLM_KEYWORD_INDICATORS = {
+  // Multi-word phrases are more semantically rich
+  multiWord: (text: string) => text.includes(' '),
+  // Compound terms with hyphens/underscores
+  compound: (text: string) => text.includes('-') || text.includes('_'),
+  // Technical specificity indicators
+  technical: (text: string) => /\b(?:api|sdk|cli|framework|platform|solution|system|service|tool|software|application|technology|method|process|strategy|approach)\b/i.test(text),
+  // Domain-specific terminology (not generic web terms)
+  domainSpecific: (text: string) => !/(website|online|internet|digital|web|page|site|click|button|link)\b/i.test(text)
+}
+
+// Enhanced keyword validation for better internationalization
+function isValidKeyword(word: string): boolean {
+  // Allow words with letters, numbers, hyphens, underscores, and basic international characters
+  if (!/^[\w\-'àáâäãåąčćęèéêëėįìíîïłńòóôöõøùúûüųūÿýżźñçčšž]+$/i.test(word)) {
+    return false
+  }
+  
+  // Reject if it's mostly numbers
+  if (/^\d+[\w]*$/.test(word) && word.replace(/\d/g, '').length < 2) {
+    return false
+  }
+  
+  // Reject common file extensions and technical noise
+  if (/\.(jpg|jpeg|png|gif|pdf|doc|docx|xlsx|mp4|avi|mp3|wav|zip|tar|gz)$/i.test(word)) {
+    return false
+  }
+  
+  // Reject CSS classes and JavaScript-like patterns
+  if (/^[a-z]+[A-Z]/.test(word) && word.length > 8) { // camelCase
+    return false
+  }
+  
+  return true
+}
+
+// Improved phrase quality scoring
+function getPhraseQualityScore(phrase: string, words: string[]): number {
+  let score = 0
+  
+  // Bonus for meaningful length
+  if (phrase.length >= 8 && phrase.length <= 40) {
+    score += 0.3
+  }
+  
+  // Penalty for phrases with repeated words
+  const uniqueWords = new Set(words)
+  if (uniqueWords.size < words.length) {
+    score -= 0.2
+  }
+  
+  // Bonus for phrases with mix of common and uncommon words
+  const commonWordCount = words.filter(w => STOPWORDS.has(w)).length
+  if (commonWordCount === 0 && words.length > 1) {
+    score += 0.4 // All meaningful words
+  } else if (commonWordCount === 1 && words.length > 2) {
+    score += 0.2 // One connector word
+  }
+  
+  // Bonus for technical or domain-specific phrases
+  if (/\b(?:api|sdk|framework|platform|solution|strategy|methodology|implementation|optimization|analytics|automation)\b/i.test(phrase)) {
+    score += 0.3
+  }
+  
+  return Math.max(0, Math.min(1, score))
+}
+
+// Enhanced position-based scoring
+function calculatePositionScore(positions: number[], totalSentences: number): number {
+  if (positions.length === 0) return 0
+  
+  let score = 0
+  
+  // Bonus for appearing early in text (likely important concepts)
+  const earlyAppearances = positions.filter(p => p < totalSentences * 0.2).length
+  score += (earlyAppearances / positions.length) * 0.3
+  
+  // Bonus for consistent distribution (not just clustered)
+  if (positions.length > 1) {
+    const spread = Math.max(...positions) - Math.min(...positions)
+    const maxSpread = totalSentences - 1
+    if (maxSpread > 0) {
+      score += (spread / maxSpread) * 0.2
+    }
+  }
+  
+  return score
+}
 
 export function extractKeywords(
   text: string, 
   sourceUrl?: string,
-  maxKeywords: number = 30
+  maxKeywords: number = 30,
+  htmlContext?: Record<string, string>, // For position-based scoring
+  metaTags?: Record<string, string>
 ): Keyword[] {
-  // Clean and normalize text
-  const cleanText = text
-    .toLowerCase()
-    .replace(/[^a-z0-9\s-]/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim()
+  // Detect niche for context-aware scoring
+  const detectedNiche = detectNiche(sourceUrl || '', text, metaTags)
+  const nicheRelevanceTerms = new Set(getNicheRelevanceTerms(detectedNiche))
+  const nicheStopWords = getNicheStopWords(detectedNiche)
+  const contextWeights = getNicheContextWeights(detectedNiche)
   
-  // Split into words
-  const words = cleanText.split(' ')
+  // Extract different types of keywords
+  const keywordCandidates = new Map<string, {
+    frequency: number
+    contexts: string[]
+    positions: number[]
+    isEntity: boolean
+    entityType?: string
+    originalCase: string
+  }>()
   
-  // Count word frequencies
-  const wordCounts = new Map<string, number>()
+  // Process text preserving original casing for entity detection
+  const sentences = text.split(/[.!?]+/)
   
-  words.forEach(word => {
-    // Skip short words (minimum 2 characters, but prefer 3+)
-    if (word.length < 2) return
+  sentences.forEach((sentence, sentenceIndex) => {
+    const cleanSentence = sentence
+      .replace(/[^a-zA-Z0-9\s-_]/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim()
     
-    // Skip all types of stopwords
-    if (STOPWORDS.has(word)) return
-    if (WEB_UI_STOPWORDS.has(word)) return
+    if (!cleanSentence) return
     
-    // Skip pure numbers and common patterns
-    if (/^\d+$/.test(word)) return
-    if (/^[a-z]{1}$/.test(word)) return // Single letters
+    // Extract entities first (before lowercasing)
+    const entities = extractEntities(sentence)
+    entities.forEach(entity => {
+      const key = entity.text.toLowerCase()
+      if (key.length < 2) return
+      
+      if (!keywordCandidates.has(key)) {
+        keywordCandidates.set(key, {
+          frequency: 0,
+          contexts: [],
+          positions: [],
+          isEntity: true,
+          entityType: entity.type,
+          originalCase: entity.text
+        })
+      }
+      
+      const candidate = keywordCandidates.get(key)!
+      candidate.frequency++
+      candidate.positions.push(sentenceIndex)
+      candidate.contexts.push('entity')
+    })
     
-    wordCounts.set(word, (wordCounts.get(word) || 0) + 1)
+    // Extract regular words and phrases
+    const words = cleanSentence.toLowerCase().split(/\s+/)
+    
+    // Single words
+    words.forEach((word, _wordIndex) => {
+      if (word.length < 3) return
+      if (STOPWORDS.has(word) || WEB_UI_STOPWORDS.has(word) || nicheStopWords.has(word)) return
+      if (/^\d+$/.test(word)) return
+      
+      // Improved non-English character handling
+      if (!isValidKeyword(word)) return
+      
+      if (!keywordCandidates.has(word)) {
+        keywordCandidates.set(word, {
+          frequency: 0,
+          contexts: [],
+          positions: [],
+          isEntity: false,
+          originalCase: word
+        })
+      }
+      
+      const candidate = keywordCandidates.get(word)!
+      candidate.frequency++
+      candidate.positions.push(sentenceIndex)
+      candidate.contexts.push('word')
+    })
+    
+    // Extract meaningful phrases (2-4 words)
+    for (let phraseLength = 2; phraseLength <= 4; phraseLength++) {
+      for (let i = 0; i <= words.length - phraseLength; i++) {
+        const phrase = words.slice(i, i + phraseLength).join(' ')
+        
+        const phraseWords = words.slice(i, i + phraseLength)
+        
+        // Skip phrases with stop words (but allow one stop word as connector)
+        const stopWordCount = phraseWords.filter(w => 
+          STOPWORDS.has(w) || WEB_UI_STOPWORDS.has(w) || nicheStopWords.has(w)
+        ).length
+        
+        if (stopWordCount > 1 || (stopWordCount > 0 && phraseLength === 2)) continue
+        
+        // Skip if too short or contains numbers only
+        if (phrase.length < 6 || /^\d+\s\d+/.test(phrase)) continue
+        
+        // Enhanced phrase validation
+        if (!phraseWords.every(w => isValidKeyword(w) || STOPWORDS.has(w))) continue
+        
+        // Get quality score for this phrase
+        const qualityScore = getPhraseQualityScore(phrase, phraseWords)
+        if (qualityScore < 0.1) continue // Skip very low quality phrases
+        
+        if (!keywordCandidates.has(phrase)) {
+          keywordCandidates.set(phrase, {
+            frequency: 0,
+            contexts: [],
+            positions: [],
+            isEntity: false,
+            originalCase: phrase
+          })
+        }
+        
+        const candidate = keywordCandidates.get(phrase)!
+        candidate.frequency++
+        candidate.positions.push(sentenceIndex)
+        candidate.contexts.push('phrase')
+      }
+    }
   })
   
-  // Sort by frequency
-  const sortedWords = Array.from(wordCounts.entries())
-    .sort((a, b) => b[1] - a[1])
-    .slice(0, maxKeywords)
+  // Calculate advanced TF-IDF and LLM-aware scores
+  const totalSentences = sentences.length
+  const keywords: Keyword[] = []
   
-  // Calculate smart relevance scoring
-  const totalWords = words.length
-  const maxFrequency = sortedWords[0]?.[1] || 1
-  
-  return sortedWords.map(([keyword, frequency]) => {
-    // Base score from frequency
-    let score = frequency / maxFrequency
+  Array.from(keywordCandidates.entries()).forEach(([keywordText, candidate]) => {
+    // Calculate TF-IDF score
+    const tf = candidate.frequency / totalSentences
+    const idf = Math.log(totalSentences / (candidate.positions.length || 1))
+    const tfidf = tf * idf
     
-    // Boost for business/tech relevance
-    if (BUSINESS_TECH_TERMS.has(keyword)) {
-      score *= 1.5
+    // Calculate context score based on position and HTML context
+    let contextScore = 1.0
+    if (htmlContext) {
+      candidate.contexts.forEach(context => {
+        contextScore += (contextWeights[context] || 1.0) - 1.0
+      })
     }
     
-    // Boost for longer, more specific terms
-    if (keyword.length >= 6) {
-      score *= 1.2
+    // Add position-based scoring
+    const positionScore = calculatePositionScore(candidate.positions, totalSentences)
+    contextScore += positionScore
+    
+    // Calculate LLM relevance score
+    let llmScore = 0.5 // base score
+    
+    // Entity boost
+    if (candidate.isEntity) {
+      llmScore += 0.3
     }
     
-    // Penalize very high frequency terms (likely generic)
-    const documentFrequency = frequency / totalWords
-    if (documentFrequency > 0.05) { // Appears in >5% of words
-      score *= 0.7
+    // Multi-word phrases are more semantically rich
+    if (LLM_KEYWORD_INDICATORS.multiWord(keywordText)) {
+      llmScore += 0.2
     }
     
-    // Boost for compound words or technical terms
-    if (keyword.includes('-') || keyword.includes('_')) {
-      score *= 1.3
+    // Compound terms
+    if (LLM_KEYWORD_INDICATORS.compound(keywordText)) {
+      llmScore += 0.15
     }
     
-    // Boost for capitalized terms that might be proper nouns/brands
-    const originalCase = text.match(new RegExp(`\\b${keyword}\\b`, 'i'))?.[0] || keyword
-    if (originalCase[0] && originalCase[0] !== originalCase[0].toLowerCase()) {
-      score *= 1.2
+    // Technical specificity
+    if (LLM_KEYWORD_INDICATORS.technical(keywordText)) {
+      llmScore += 0.2
     }
     
-    // Determine relevance category based on final score
+    // Domain specificity (avoid generic web terms)
+    if (LLM_KEYWORD_INDICATORS.domainSpecific(keywordText)) {
+      llmScore += 0.15
+    }
+    
+    // Niche relevance boost
+    if (nicheRelevanceTerms.has(keywordText) || 
+        Array.from(nicheRelevanceTerms).some(term => 
+          keywordText.includes(term) || term.includes(keywordText)
+        )) {
+      llmScore += 0.25
+    }
+    
+    // Length-based specificity
+    if (keywordText.length > 12) {
+      llmScore += 0.1
+    }
+    
+    // Penalize overly frequent terms
+    if (candidate.frequency > totalSentences * 0.1) {
+      llmScore *= 0.8
+    }
+    
+    llmScore = Math.min(llmScore, 1.0)
+    
+    // Combined score
+    const combinedScore = (tfidf * 0.4) + (contextScore * 0.3) + (llmScore * 0.3)
+    
+    // Determine keyword type
+    let keywordType: 'single-word' | 'phrase' | 'entity' | 'technical-term'
+    if (candidate.isEntity) {
+      keywordType = 'entity'
+    } else if (keywordText.includes(' ')) {
+      keywordType = 'phrase'
+    } else if (keywordText.includes('-') || keywordText.includes('_') || 
+               LLM_KEYWORD_INDICATORS.technical(keywordText)) {
+      keywordType = 'technical-term'
+    } else {
+      keywordType = 'single-word'
+    }
+    
+    // Determine relevance
     let relevance: 'high' | 'medium' | 'low'
-    if (score >= 0.8) {
+    if (combinedScore >= 1.5) {
       relevance = 'high'
-    } else if (score >= 0.4) {
+    } else if (combinedScore >= 0.8) {
       relevance = 'medium'
     } else {
       relevance = 'low'
     }
     
-    // Boost relevance for SEO-related keywords
-    const seoKeywords = ['backlink', 'seo', 'link', 'anchor', 'domain', 'url', 'rank', 'search', 'optimization']
-    if (seoKeywords.some(seoWord => keyword.includes(seoWord))) {
+    // Special handling for SEO-related keywords
+    const seoKeywords = ['backlink', 'seo', 'link building', 'anchor text', 'domain authority', 'page rank']
+    if (seoKeywords.some(seoWord => keywordText.includes(seoWord))) {
       relevance = 'high'
     }
     
-    return {
-      id: `${keyword}-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
-      keyword,
-      frequency,
+    keywords.push({
+      id: `${keywordText.replace(/\s+/g, '-')}-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+      keyword: keywordText,
+      frequency: candidate.frequency,
       relevance,
       source_url: sourceUrl,
-      created_at: new Date().toISOString()
-    }
+      created_at: new Date().toISOString(),
+      niche: detectedNiche,
+      llm_relevance_score: llmScore,
+      keyword_type: keywordType,
+      context_score: contextScore,
+      co_occurrence_boost: 0 // Will be calculated in post-processing
+    })
   })
+  
+  // Sort by combined relevance and return top keywords
+  const sortedKeywords = keywords
+    .sort((a, b) => {
+      const scoreA = (a.llm_relevance_score || 0) * (a.context_score || 1) * a.frequency
+      const scoreB = (b.llm_relevance_score || 0) * (b.context_score || 1) * b.frequency
+      return scoreB - scoreA
+    })
+    .slice(0, maxKeywords)
+  
+  // Apply semantic clustering
+  return assignSemanticClusters(sortedKeywords)
 }
 
 // Process keywords using idle callbacks to avoid blocking UI
@@ -293,4 +543,41 @@ export async function extractKeywordsFromBacklinks(
       resolve(keywords)
     })
   })
+}
+
+// Extract named entities from text
+function extractEntities(text: string): Array<{ text: string; type: string }> {
+  const entities: Array<{ text: string; type: string }> = []
+  
+  // Extract brands/company names
+  const brandMatches = text.match(ENTITY_PATTERNS.brands) || []
+  brandMatches.forEach(match => {
+    if (match.length > 2 && !STOPWORDS.has(match.toLowerCase())) {
+      entities.push({ text: match, type: 'brand' })
+    }
+  })
+  
+  // Extract technical terms
+  const techMatches = text.match(ENTITY_PATTERNS.technical) || []
+  techMatches.forEach(match => {
+    if (match.length > 3) {
+      entities.push({ text: match, type: 'technical' })
+    }
+  })
+  
+  // Extract acronyms
+  const acronymMatches = text.match(ENTITY_PATTERNS.acronyms) || []
+  acronymMatches.forEach(match => {
+    if (match.length >= 2 && match.length <= 8) {
+      entities.push({ text: match, type: 'acronym' })
+    }
+  })
+  
+  // Extract version/model numbers
+  const versionMatches = text.match(ENTITY_PATTERNS.versions) || []
+  versionMatches.forEach(match => {
+    entities.push({ text: match, type: 'version' })
+  })
+  
+  return entities
 }
